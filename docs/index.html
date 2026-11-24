@@ -38,7 +38,7 @@
         log("Opening USB Serial Port picker...");
         const port = await navigator.serial.requestPort();
         log("Loading esptool-js flasher engine...");
-        const { ESPLoader, Transport } = await import("https://esm.sh");
+        const { ESPLoader, Transport } = await import("./esptool.js");
         const transport = new Transport(port, true);
         const loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean(){}, writeLine: log, write: (s) => { logEl.textContent += s; } } });
         log("Connecting to ESP32-P4 bootloader...");

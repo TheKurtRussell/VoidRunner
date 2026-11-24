@@ -34,6 +34,7 @@ jobs:
         run: |
           mkdir -p site
           cp docs/index.html docs/manifest.json build/VoidRunner-tab5-merged.bin site/
+          curl -fsSL https://jsdelivr.net -o site/esptool.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
