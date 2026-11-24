@@ -27,7 +27,7 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     esp_lcd_touch_read_data(tp);
     esp_lcd_touch_point_data_t pt;
     uint8_t cnt = 0;
-    if (esp_lcd_touch_get_data(tp, pt, &cnt, 1) == ESP_OK && cnt > 0) {
+    if (esp_lcd_touch_get_data(tp, &pt, &cnt, 1) == ESP_OK && cnt > 0) {
         data->point.x = pt.x;
         data->point.y = pt.y;
         data->state = LV_INDEV_STATE_PRESSED;
@@ -56,7 +56,19 @@ void app_main(void) {
     esp_lcd_dbi_io_config_t dbi_cfg = ST7123_PANEL_IO_DBI_CONFIG();
     esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &io_handle);
 
-    esp_lcd_dpi_panel_config_t dpi_cfg = ST7123_720_1280_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
+    esp_lcd_dpi_panel_config_t dpi_cfg = {
+        .virtual_channel = 0,
+        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 60,
+        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .num_fbs = 1,
+        .video_timing = {
+            .h_size = 720, .v_size = 1280,
+            .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40,
+            .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20,
+        },
+        .flags.use_dma2d = true,
+    };
     st7123_vendor_config_t vendor_cfg = { .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg } };
     esp_lcd_panel_dev_config_t lcd_cfg = {
         .reset_gpio_num = GPIO_NUM_27, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
