@@ -24,10 +24,10 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     esp_lcd_touch_read_data(tp);
-    uint16_t tx, ty; uint8_t cnt = 0;
-    if (esp_lcd_touch_get_coordinates(tp, &tx, &ty, NULL, &cnt, 1) && cnt > 0) {
-        data->point.x = tx;
-        data->point.y = ty;
+    esp_lcd_touch_point_data_t pt[1]; uint8_t cnt = 0;
+    if (esp_lcd_touch_get_data(tp, pt, &cnt, 1) == ESP_OK && cnt > 0) {
+        data->point.x = pt.x;
+        data->point.y = pt.y;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
