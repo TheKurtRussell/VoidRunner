@@ -21,6 +21,7 @@ jobs:
       - name: Build ESP32-P4 Firmware
         run: |
           . $IDF_PATH/export.sh
+          pip install -q "idf-component-manager>=2.3.0,<3.0.0"
           idf.py set-target esp32p4
           idf.py build
           esptool.py --chip esp32p4 merge_bin -o build/VoidRunner-tab5-merged.bin --flash_mode dio --flash_size 16MB 0x2000 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x20000 build/VoidRunner.bin
