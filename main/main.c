@@ -6,6 +6,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_st7123.h"
+#include "esp_lcd_touch.h"
 #include "esp_lcd_touch_st7123.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
@@ -24,7 +25,8 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     esp_lcd_touch_read_data(tp);
-    esp_lcd_touch_point_data_t pt[1]; uint8_t cnt = 0;
+    esp_lcd_touch_point_data_t pt;
+    uint8_t cnt = 0;
     if (esp_lcd_touch_get_data(tp, pt, &cnt, 1) == ESP_OK && cnt > 0) {
         data->point.x = pt.x;
         data->point.y = pt.y;
