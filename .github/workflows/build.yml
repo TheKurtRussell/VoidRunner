@@ -33,7 +33,7 @@ jobs:
       - name: Prepare GitHub Pages Flasher
         run: |
           mkdir -p site
-          cp docs/index.html docs/manifest.json docs/esptool.js build/VoidRunner-tab5-merged.bin site/
+          cp docs/index.html docs/manifest.json build/VoidRunner-tab5-merged.bin site/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

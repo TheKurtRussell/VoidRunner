@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>VOIDRUNNER // M5Stack Tab5 Web Flasher (Opera / Chrome / Edge)</title>
+  <title>VOIDRUNNER // M5Stack Tab5 Web Flasher</title>
   <style>
     body { background:#0a0c14; color:#00f0ff; font-family:monospace; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
     .box { border:2px solid #ff2aa5; background:#121626; padding:32px; max-width:580px; width:90%; text-align:center; box-shadow:0 0 30px rgba(255,42,165,0.25); }
@@ -11,14 +11,14 @@
     .btn { background:#00f0ff; color:#0a0c14; border:none; padding:14px 28px; font-family:monospace; font-size:16px; font-weight:bold; cursor:pointer; margin:10px 6px; }
     .btn:hover { background:#ffb928; }
     .btn:disabled { background:#394366; color:#8fa4cc; cursor:not-allowed; }
-    #log { background:#07090f; border:1px solid #28eb78; color:#28eb78; text-align:left; padding:12px; height:180px; overflow-y:auto; font-size:12px; margin-top:16px; white-space:pre-wrap; }
+    #log { background:#07090f; border:1px solid #28eb78; color:#28eb78; text-align:left; padding:12px; height:190px; overflow-y:auto; font-size:12px; margin-top:16px; white-space:pre-wrap; }
     .dl { display:inline-block; margin-top:14px; color:#ffb928; font-size:13px; }
   </style>
 </head>
 <body>
   <div class="box">
     <h1>VOIDRUNNER v0.1</h1>
-    <p>16-Bit Cyberpunk RPG for <b>M5Stack Tab5 (ESP32-P4)</b>.<br/>Works in <b>Opera, Chrome &amp; Edge</b> via WebSerial.</p>
+    <p>16-Bit Cyberpunk RPG for <b>M5Stack Tab5 (ESP32-P4)</b>.<br/>Works in <b>Opera, Chrome &amp; Edge</b> — Zero External Dependencies.</p>
     <button id="flashBtn" class="btn">CONNECT &amp; FLASH TAB5</button>
     <div id="log">Ready. Click CONNECT &amp; FLASH TAB5 to select your USB serial port...</div>
     <a class="dl" href="VoidRunner-tab5-merged.bin" download>Download VoidRunner-tab5-merged.bin (offset 0x0)</a>
@@ -26,43 +26,80 @@
   <script>
     const btn = document.getElementById("flashBtn");
     const logEl = document.getElementById("log");
-    const log = (msg) => { logEl.textContent += "\n" + msg; logEl.scrollTop = logEl.scrollHeight; };
-    btn.addEventListener("click", async () => {
-      try {
-        if (!("serial" in navigator)) {
-          log("ERROR: WebSerial API (navigator.serial) is disabled in this browser.");
-          log("In Opera: open opera://settings/content/serialPorts and allow serial ports.");
-          return;
+    const log = (m) => { logEl.textContent += "\n" + m; logEl.scrollTop = logEl.scrollHeight; };
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    function slipEncode(pkt) {
+      const out = [0xC0];
+      for (const b of pkt) { if (b === 0xC0) out.push(0xDB, 0xDC); else if (b === 0xDB) out.push(0xDB, 0xDD); else out.push(b); }
+      out.push(0xC0); return new Uint8Array(out);
+    }
+    function buildCmd(op, data, chk = 0) {
+      const buf = new Uint8Array(8 + data.length); const dv = new DataView(buf.buffer);
+      buf = 0x00; buf = op; dv.setUint16(2, data.length, true); dv.setUint32(4, chk, true);
+      buf.set(data, 8); return slipEncode(buf);
+    }
+    function checksum(data) { let c = 0xEF; for (let i = 0; i < data.length; i++) c ^= data[i]; return c >>> 0; }
+    async function readResp(reader, timeoutMs = 3000) {
+      const deadline = Date.now() + timeoutMs; let frame = [], inFrame = false, esc = false;
+      while (Date.now() < deadline) {
+        const { value, done } = await Promise.race([reader.read(), sleep(150).then(() => ({ value: null, done: false }))]);
+        if (done) break; if (!value) continue;
+        for (const b of value) {
+          if (b === 0xC0) { if (inFrame && frame.length >= 8) return new Uint8Array(frame); frame = []; inFrame = true; esc = false; }
+          else if (inFrame) { if (esc) { frame.push(b === 0xDC ? 0xC0 : 0xDB); esc = false; } else if (b === 0xDB) esc = true; else frame.push(b); }
         }
+      }
+      throw new Error("Timeout waiting for ESP32-P4 bootloader response");
+    }
+    btn.addEventListener("click", async () => {
+      let port, reader, writer;
+      try {
+        if (!("serial" in navigator)) { log("ERROR: Enable WebSerial in opera://settings/content/serialPorts"); return; }
         btn.disabled = true;
         log("Opening USB Serial Port picker...");
-        const port = await navigator.serial.requestPort();
-        log("Loading esptool-js flasher engine...");
-        const { ESPLoader, Transport } = await import("./esptool.js");
-        const transport = new Transport(port, true);
-        const loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean(){}, writeLine: log, write: (s) => { logEl.textContent += s; } } });
-        log("Connecting to ESP32-P4 bootloader...");
-        await loader.main();
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter(); reader = port.readable.getReader();
+        log("Resetting Tab5 into ROM bootloader...");
+        await port.setSignals({ dataTerminalReady: false, requestToSend: true }); await sleep(100);
+        await port.setSignals({ dataTerminalReady: true, requestToSend: false }); await sleep(100);
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false }); await sleep(150);
+        const syncPayload = new Uint8Array(36); syncPayload = 0x07; syncPayload = 0x07; syncPayload = 0x12; syncPayload = 0x20; syncPayload.fill(0x55, 4);
+        let synced = false;
+        for (let i = 0; i < 12; i++) {
+          try { await writer.write(buildCmd(0x08, syncPayload)); const r = await readResp(reader, 250); if (r === 0x01 && r === 0x08) { synced = true; break; } } catch (_) {}
+        }
+        if (!synced) throw new Error("Could not sync with ESP32-P4 bootloader. Hold BOOT while plugging in USB-C if needed.");
+        log("Connected & synced with ESP32-P4 ROM bootloader!");
+        await writer.write(buildCmd(0x0B, new Uint8Array(8))); await readResp(reader, 2000);
         log("Fetching VoidRunner-tab5-merged.bin...");
         const resp = await fetch("VoidRunner-tab5-merged.bin?v=" + Date.now());
-        if (!resp.ok) throw new Error("Firmware binary HTTP " + resp.status);
-        const bytes = new Uint8Array(await resp.arrayBuffer());
-        let binStr = "";
-        for (let i = 0; i < bytes.length; i++) binStr += String.fromCharCode(bytes[i]);
-        log("Flashing " + bytes.length + " bytes to 0x0...");
-        await loader.writeFlash({
-          fileArray: [{ data: binStr, address: 0x0 }],
-          flashSize: "keep", flashMode: "keep", flashFreq: "keep", eraseAll: false, compress: true,
-          reportProgress: (idx, written, total) => { if (written === total || written % 131072 === 0) log("Progress: " + Math.round((written / total) * 100) + "%"); }
-        });
-        log("DONE! Resetting Tab5...");
-        await transport.setDTR(false);
-        await new Promise(r => setTimeout(r, 100));
-        await transport.setDTR(true);
-        await transport.disconnect();
+        if (!resp.ok) throw new Error("Firmware HTTP " + resp.status);
+        const fw = new Uint8Array(await resp.arrayBuffer());
+        const blkSize = 0x400; const numBlocks = Math.ceil(fw.length / blkSize);
+        log("Erasing & preparing " + fw.length + " bytes (" + numBlocks + " blocks)...");
+        const beg = new Uint8Array(20); const bdv = new DataView(beg.buffer);
+        bdv.setUint32(0, fw.length, true); bdv.setUint32(4, numBlocks, true); bdv.setUint32(8, blkSize, true); bdv.setUint32(12, 0x0, true); bdv.setUint32(16, 0, true);
+        await writer.write(buildCmd(0x02, beg)); await readResp(reader, 15000);
+        for (let seq = 0; seq < numBlocks; seq++) {
+          const chunk = new Uint8Array(blkSize); chunk.fill(0xFF);
+          const slice = fw.subarray(seq * blkSize, Math.min((seq + 1) * blkSize, fw.length));
+          chunk.set(slice, 0);
+          const pkt = new Uint8Array(16 + blkSize); const pdv = new DataView(pkt.buffer);
+          pdv.setUint32(0, blkSize, true); pdv.setUint32(4, seq, true); pdv.setUint32(8, 0, true); pdv.setUint32(12, 0, true);
+          pkt.set(chunk, 16);
+          await writer.write(buildCmd(0x03, pkt, checksum(chunk))); await readResp(reader, 5000);
+          if (seq % 64 === 0 || seq === numBlocks - 1) log("Flashing: " + Math.round(((seq + 1) / numBlocks) * 100) + "%");
+        }
+        const endPkt = new Uint8Array(4); new DataView(endPkt.buffer).setUint32(0, 1, true);
+        await writer.write(buildCmd(0x04, endPkt)); try { await readResp(reader, 1000); } catch (_) {}
+        log("FLASH COMPLETE! Rebooting Tab5 into VoidRunner...");
+        await port.setSignals({ dataTerminalReady: false, requestToSend: true }); await sleep(100);
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false });
       } catch (e) {
         log("ERROR: " + (e && e.message ? e.message : e));
       } finally {
+        try { if (reader) await reader.cancel(); if (writer) writer.releaseLock(); if (port) await port.close(); } catch (_) {}
         btn.disabled = false;
       }
     });
