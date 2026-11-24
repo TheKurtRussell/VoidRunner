@@ -24,27 +24,27 @@
     <a class="dl" href="VoidRunner-tab5-merged.bin" download>Download VoidRunner-tab5-merged.bin (offset 0x0)</a>
   </div>
   <script>
-    const btn = document.getElementById("flashBtn");
-    const logEl = document.getElementById("log");
-    const log = (m) => { logEl.textContent += "\n" + m; logEl.scrollTop = logEl.scrollHeight; };
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    let btn = document.getElementById("flashBtn");
+    let logEl = document.getElementById("log");
+    let log = (m) => { logEl.textContent += "\n" + m; logEl.scrollTop = logEl.scrollHeight; };
+    let sleep = (ms) => new Promise(r => setTimeout(r, ms));
     function slipEncode(pkt) {
-      const out = new Array(); out.push(0xC0);
-      for (const b of pkt) { if (b === 0xC0) out.push(0xDB, 0xDC); else if (b === 0xDB) out.push(0xDB, 0xDD); else out.push(b); }
+      let out = new Array(); out.push(0xC0);
+      for (let b of pkt) { if (b === 0xC0) out.push(0xDB, 0xDC); else if (b === 0xDB) out.push(0xDB, 0xDD); else out.push(b); }
       out.push(0xC0); return new Uint8Array(out);
     }
     function buildCmd(op, data, chk = 0) {
-      const buf = new Uint8Array(8 + data.length); const dv = new DataView(buf.buffer);
+      let buf = new Uint8Array(8 + data.length); let dv = new DataView(buf.buffer);
       dv.setUint8(0, 0x00); dv.setUint8(1, op); dv.setUint16(2, data.length, true); dv.setUint32(4, chk, true);
       buf.set(data, 8); return slipEncode(buf);
     }
-    function checksum(data) { let c = 0xEF; for (const b of data) c ^= b; return c >>> 0; }
+    function checksum(data) { let c = 0xEF; for (let b of data) c ^= b; return c >>> 0; }
     async function readResp(reader, timeoutMs = 3000) {
-      const deadline = Date.now() + timeoutMs; let frame = new Array(), inFrame = false, esc = false;
+      let deadline = Date.now() + timeoutMs; let frame = new Array(), inFrame = false, esc = false;
       while (Date.now() < deadline) {
-        const { value, done } = await Promise.race([reader.read(), sleep(150).then(() => ({ value: null, done: false }))]);
+        let { value, done } = await Promise.race([reader.read(), sleep(150).then(() => ({ value: null, done: false }))]);
         if (done) break; if (!value) continue;
-        for (const b of value) {
+        for (let b of value) {
           if (b === 0xC0) { if (inFrame && frame.length >= 8) return new Uint8Array(frame); frame = new Array(); inFrame = true; esc = false; }
           else if (inFrame) { if (esc) { frame.push(b === 0xDC ? 0xC0 : 0xDB); esc = false; } else if (b === 0xDB) esc = true; else frame.push(b); }
         }
@@ -64,35 +64,35 @@
         await port.setSignals({ dataTerminalReady: false, requestToSend: true }); await sleep(100);
         await port.setSignals({ dataTerminalReady: true, requestToSend: false }); await sleep(100);
         await port.setSignals({ dataTerminalReady: false, requestToSend: false }); await sleep(150);
-        const syncPayload = new Uint8Array(36); const sdv = new DataView(syncPayload.buffer);
+        let syncPayload = new Uint8Array(36); let sdv = new DataView(syncPayload.buffer);
         sdv.setUint8(0, 0x07); sdv.setUint8(1, 0x07); sdv.setUint8(2, 0x12); sdv.setUint8(3, 0x20); syncPayload.fill(0x55, 4);
         let synced = false;
         for (let i = 0; i < 12; i++) {
-          try { await writer.write(buildCmd(0x08, syncPayload)); const r = await readResp(reader, 250); const rdv = new DataView(r.buffer); if (rdv.getUint8(0) === 0x01 && rdv.getUint8(1) === 0x08) { synced = true; break; } } catch (_) {}
+          try { await writer.write(buildCmd(0x08, syncPayload)); let r = await readResp(reader, 250); let rdv = new DataView(r.buffer); if (rdv.getUint8(0) === 0x01 && rdv.getUint8(1) === 0x08) { synced = true; break; } } catch (_) {}
         }
         if (!synced) throw new Error("Could not sync with ESP32-P4 bootloader. Hold BOOT while plugging in USB-C if needed.");
         log("Connected & synced with ESP32-P4 ROM bootloader!");
         await writer.write(buildCmd(0x0B, new Uint8Array(8))); await readResp(reader, 2000);
         log("Fetching VoidRunner-tab5-merged.bin...");
-        const resp = await fetch("VoidRunner-tab5-merged.bin?v=" + Date.now());
+        let resp = await fetch("VoidRunner-tab5-merged.bin?v=" + Date.now());
         if (!resp.ok) throw new Error("Firmware HTTP " + resp.status);
-        const fw = new Uint8Array(await resp.arrayBuffer());
-        const blkSize = 0x400; const numBlocks = Math.ceil(fw.length / blkSize);
+        let fw = new Uint8Array(await resp.arrayBuffer());
+        let blkSize = 0x400; let numBlocks = Math.ceil(fw.length / blkSize);
         log("Erasing & preparing " + fw.length + " bytes (" + numBlocks + " blocks)...");
-        const beg = new Uint8Array(20); const bdv = new DataView(beg.buffer);
+        let beg = new Uint8Array(20); let bdv = new DataView(beg.buffer);
         bdv.setUint32(0, fw.length, true); bdv.setUint32(4, numBlocks, true); bdv.setUint32(8, blkSize, true); bdv.setUint32(12, 0x0, true); bdv.setUint32(16, 0, true);
         await writer.write(buildCmd(0x02, beg)); await readResp(reader, 15000);
         for (let seq = 0; seq < numBlocks; seq++) {
-          const chunk = new Uint8Array(blkSize); chunk.fill(0xFF);
-          const slice = fw.subarray(seq * blkSize, Math.min((seq + 1) * blkSize, fw.length));
+          let chunk = new Uint8Array(blkSize); chunk.fill(0xFF);
+          let slice = fw.subarray(seq * blkSize, Math.min((seq + 1) * blkSize, fw.length));
           chunk.set(slice, 0);
-          const pkt = new Uint8Array(16 + blkSize); const pdv = new DataView(pkt.buffer);
+          let pkt = new Uint8Array(16 + blkSize); let pdv = new DataView(pkt.buffer);
           pdv.setUint32(0, blkSize, true); pdv.setUint32(4, seq, true); pdv.setUint32(8, 0, true); pdv.setUint32(12, 0, true);
           pkt.set(chunk, 16);
           await writer.write(buildCmd(0x03, pkt, checksum(chunk))); await readResp(reader, 5000);
           if (seq % 64 === 0 || seq === numBlocks - 1) log("Flashing: " + Math.round(((seq + 1) / numBlocks) * 100) + "%");
         }
-        const endPkt = new Uint8Array(4); new DataView(endPkt.buffer).setUint32(0, 1, true);
+        let endPkt = new Uint8Array(4); new DataView(endPkt.buffer).setUint32(0, 1, true);
         await writer.write(buildCmd(0x04, endPkt)); try { await readResp(reader, 1000); } catch (_) {}
         log("FLASH COMPLETE! Rebooting Tab5 into VoidRunner...");
         await port.setSignals({ dataTerminalReady: false, requestToSend: true }); await sleep(100);
