@@ -11,7 +11,7 @@
     .btn { background:#00f0ff; color:#0a0c14; border:none; padding:14px 28px; font-family:monospace; font-size:16px; font-weight:bold; cursor:pointer; margin:10px 6px; }
     .btn:hover { background:#ffb928; }
     .btn:disabled { background:#394366; color:#8fa4cc; cursor:not-allowed; }
-    #log { background:#07090f; border:1px solid #28eb78; color:#28eb78; text-align:left; padding:12px; height:160px; overflow-y:auto; font-size:12px; margin-top:16px; white-space:pre-wrap; }
+    #log { background:#07090f; border:1px solid #28eb78; color:#28eb78; text-align:left; padding:12px; height:180px; overflow-y:auto; font-size:12px; margin-top:16px; white-space:pre-wrap; }
     .dl { display:inline-block; margin-top:14px; color:#ffb928; font-size:13px; }
   </style>
 </head>
@@ -23,26 +23,30 @@
     <div id="log">Ready. Click CONNECT &amp; FLASH TAB5 to select your USB serial port...</div>
     <a class="dl" href="VoidRunner-tab5-merged.bin" download>Download VoidRunner-tab5-merged.bin (offset 0x0)</a>
   </div>
-  <script type="module">
-    import { ESPLoader, Transport } from "https://unpkg.com";
+  <script>
     const btn = document.getElementById("flashBtn");
     const logEl = document.getElementById("log");
     const log = (msg) => { logEl.textContent += "\n" + msg; logEl.scrollTop = logEl.scrollHeight; };
-    if (!("serial" in navigator)) { log("ERROR: WebSerial not available in this browser."); btn.disabled = true; }
     btn.addEventListener("click", async () => {
       try {
+        if (!("serial" in navigator)) {
+          log("ERROR: WebSerial API (navigator.serial) is disabled in this browser.");
+          log("In Opera: open opera://settings/content/serialPorts and allow serial ports.");
+          return;
+        }
         btn.disabled = true;
-        log("Requesting Tab5 USB Serial Port...");
+        log("Opening USB Serial Port picker...");
         const port = await navigator.serial.requestPort();
+        log("Loading esptool-js flasher engine...");
+        const { ESPLoader, Transport } = await import("https://esm.sh");
         const transport = new Transport(port, true);
         const loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean(){}, writeLine: log, write: (s) => { logEl.textContent += s; } } });
         log("Connecting to ESP32-P4 bootloader...");
         await loader.main();
-        log("Downloading VoidRunner-tab5-merged.bin...");
-        const resp = await fetch("VoidRunner-tab5-merged.bin");
-        if (!resp.ok) throw new Error("Firmware binary not found (HTTP " + resp.status + ")");
-        const buf = await resp.arrayBuffer();
-        const bytes = new Uint8Array(buf);
+        log("Fetching VoidRunner-tab5-merged.bin...");
+        const resp = await fetch("VoidRunner-tab5-merged.bin?v=" + Date.now());
+        if (!resp.ok) throw new Error("Firmware binary HTTP " + resp.status);
+        const bytes = new Uint8Array(await resp.arrayBuffer());
         let binStr = "";
         for (let i = 0; i < bytes.length; i++) binStr += String.fromCharCode(bytes[i]);
         log("Flashing " + bytes.length + " bytes to 0x0...");
@@ -57,7 +61,7 @@
         await transport.setDTR(true);
         await transport.disconnect();
       } catch (e) {
-        log("ERROR: " + e.message);
+        log("ERROR: " + (e && e.message ? e.message : e));
       } finally {
         btn.disabled = false;
       }
