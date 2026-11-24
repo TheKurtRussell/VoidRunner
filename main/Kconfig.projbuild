@@ -1,0 +1,3 @@
+config LV_USE_FREETYPE
+    bool "Enable FreeType support"
+    default n
