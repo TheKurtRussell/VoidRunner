@@ -15,6 +15,7 @@
 
 static esp_lcd_panel_handle_t disp_panel = NULL;
 static esp_lcd_touch_handle_t tp = NULL;
+static bool touch_ready = false;
 
 static void lvgl_tick_cb(void *arg) { lv_tick_inc(5); }
 
@@ -24,16 +25,18 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 }
 
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
-    esp_lcd_touch_read_data(tp);
-    esp_lcd_touch_point_data_t pt;
-    uint8_t cnt = 0;
-    if (esp_lcd_touch_get_data(tp, &pt, &cnt, 1) == ESP_OK && cnt > 0) {
-        data->point.x = pt.x;
-        data->point.y = pt.y;
-        data->state = LV_INDEV_STATE_PRESSED;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
+    if (!touch_ready || !tp) { data->state = LV_INDEV_STATE_RELEASED; return; }
+    if (esp_lcd_touch_read_data(tp) == ESP_OK) {
+        esp_lcd_touch_point_data_t pt;
+        uint8_t cnt = 0;
+        if (esp_lcd_touch_get_data(tp, &pt, &cnt, 1) == ESP_OK && cnt > 0) {
+            data->point.x = pt.x;
+            data->point.y = pt.y;
+            data->state = LV_INDEV_STATE_PRESSED;
+            return;
+        }
     }
+    data->state = LV_INDEV_STATE_RELEASED;
 }
 
 static void lvgl_task(void *arg) {
@@ -43,7 +46,34 @@ static void lvgl_task(void *arg) {
     }
 }
 
+static void io_expander_init(i2c_master_bus_handle_t bus) {
+    uint8_t addrs[2] = { 0x43, 0x44 };
+    for (int i = 0; i < 2; i++) {
+        i2c_master_dev_handle_t dev = NULL;
+        i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addrs[i], .scl_speed_hz = 100000 };
+        if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
+            uint8_t dir[2] = { 0x03, 0xFF };
+            uint8_t out[2] = { 0x05, 0xFF };
+            uint8_t hiz[2] = { 0x07, 0x00 };
+            i2c_master_transmit(dev, dir, 2, 50);
+            i2c_master_transmit(dev, out, 2, 50);
+            i2c_master_transmit(dev, hiz, 2, 50);
+            i2c_master_bus_rm_device(dev);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+}
+
 void app_main(void) {
+    i2c_master_bus_handle_t i2c_bus = NULL;
+    i2c_master_bus_config_t i2c_cfg = {
+        .i2c_port = I2C_NUM_0, .sda_io_num = GPIO_NUM_31, .scl_io_num = GPIO_NUM_32,
+        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,
+    };
+    if (i2c_new_master_bus(&i2c_cfg, &i2c_bus) == ESP_OK) {
+        io_expander_init(i2c_bus);
+    }
+
     esp_ldo_channel_handle_t ldo_mipi = NULL;
     esp_ldo_channel_config_t ldo_cfg = { .chan_id = 3, .voltage_mv = 2500 };
     esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi);
@@ -57,23 +87,13 @@ void app_main(void) {
     esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &io_handle);
 
     esp_lcd_dpi_panel_config_t dpi_cfg = {
-        .virtual_channel = 0,
-        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 60,
-        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
-        .num_fbs = 1,
-        .video_timing = {
-            .h_size = 720, .v_size = 1280,
-            .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40,
-            .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20,
-        },
+        .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 60, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
+        .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40, .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20 },
         .flags.use_dma2d = true,
     };
     st7123_vendor_config_t vendor_cfg = { .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg } };
-    esp_lcd_panel_dev_config_t lcd_cfg = {
-        .reset_gpio_num = GPIO_NUM_27, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-        .bits_per_pixel = 16, .vendor_config = &vendor_cfg,
-    };
+    esp_lcd_panel_dev_config_t lcd_cfg = { .reset_gpio_num = GPIO_NUM_27, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16, .vendor_config = &vendor_cfg };
     esp_lcd_new_panel_st7123(io_handle, &lcd_cfg, &disp_panel);
     esp_lcd_panel_reset(disp_panel);
     esp_lcd_panel_init(disp_panel);
@@ -83,20 +103,17 @@ void app_main(void) {
     gpio_config(&bl_cfg);
     gpio_set_level(GPIO_NUM_22, 1);
 
-    i2c_master_bus_handle_t i2c_bus = NULL;
-    i2c_master_bus_config_t i2c_cfg = {
-        .i2c_port = I2C_NUM_0, .sda_io_num = GPIO_NUM_31, .scl_io_num = GPIO_NUM_32,
-        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,
-    };
-    i2c_new_master_bus(&i2c_cfg, &i2c_bus);
-
-    esp_lcd_panel_io_handle_t tp_io = NULL;
-    esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
-    tp_io_cfg.scl_speed_hz = 400000;
-    esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io);
-
-    esp_lcd_touch_config_t tp_cfg = { .x_max = 720, .y_max = 1280, .rst_gpio_num = GPIO_NUM_23, .int_gpio_num = GPIO_NUM_NC };
-    esp_lcd_touch_new_i2c_st7123(tp_io, &tp_cfg, &tp);
+    if (i2c_bus) {
+        esp_lcd_panel_io_handle_t tp_io = NULL;
+        esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
+        tp_io_cfg.scl_speed_hz = 400000;
+        if (esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io) == ESP_OK) {
+            esp_lcd_touch_config_t tp_cfg = { .x_max = 720, .y_max = 1280, .rst_gpio_num = GPIO_NUM_NC, .int_gpio_num = GPIO_NUM_NC };
+            if (esp_lcd_touch_new_i2c_st7123(tp_io, &tp_cfg, &tp) == ESP_OK) {
+                touch_ready = true;
+            }
+        }
+    }
 
     lv_init();
     const esp_timer_create_args_t tick_args = { .callback = &lvgl_tick_cb, .name = "lv_tick" };

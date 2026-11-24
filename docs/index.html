@@ -2,32 +2,66 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VOIDRUNNER // M5Stack Tab5 Web Flasher</title>
-  <script type="module" src="https://unpkg.com"></script>
+  <title>VOIDRUNNER // M5Stack Tab5 Web Flasher (Opera / Chrome / Edge)</title>
   <style>
     body { background:#0a0c14; color:#00f0ff; font-family:monospace; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
-    .box { border:2px solid #ff2aa5; background:#121626; padding:36px; max-width:540px; text-align:center; box-shadow:0 0 30px rgba(255,42,165,0.25); }
+    .box { border:2px solid #ff2aa5; background:#121626; padding:32px; max-width:580px; width:90%; text-align:center; box-shadow:0 0 30px rgba(255,42,165,0.25); }
     h1 { color:#ffb928; letter-spacing:3px; margin-top:0; }
-    p { color:#d8e4ff; line-height:1.6; }
-    .btn { background:#00f0ff; color:#0a0c14; border:none; padding:14px 28px; font-family:monospace; font-size:16px; font-weight:bold; cursor:pointer; margin-top:12px; letter-spacing:1px; }
+    p { color:#d8e4ff; line-height:1.5; }
+    .btn { background:#00f0ff; color:#0a0c14; border:none; padding:14px 28px; font-family:monospace; font-size:16px; font-weight:bold; cursor:pointer; margin:10px 6px; }
     .btn:hover { background:#ffb928; }
-    .dl { display:inline-block; margin-top:18px; color:#28eb78; text-decoration:underline; font-size:13px; }
-    .note { margin-top:16px; font-size:12px; color:#8fa4cc; }
+    .btn:disabled { background:#394366; color:#8fa4cc; cursor:not-allowed; }
+    #log { background:#07090f; border:1px solid #28eb78; color:#28eb78; text-align:left; padding:12px; height:160px; overflow-y:auto; font-size:12px; margin-top:16px; white-space:pre-wrap; }
+    .dl { display:inline-block; margin-top:14px; color:#ffb928; font-size:13px; }
   </style>
 </head>
 <body>
   <div class="box">
     <h1>VOIDRUNNER v0.1</h1>
-    <p>16-Bit Cyberpunk RPG for <b>M5Stack Tab5 (ESP32-P4)</b>.<br/>Connect your Tab5 via USB-C using <b>Google Chrome</b> or <b>Edge</b>.</p>
-    <esp-web-install-button manifest="manifest.json">
-      <button slot="activate" class="btn">CONNECT &amp; FLASH TAB5</button>
-      <span slot="unsupported" style="color:#ff4d6d;">WebSerial not supported in this browser — open in Chrome or Edge.</span>
-      <span slot="notsupported" style="color:#ff4d6d;">HTTPS or Chrome/Edge required for USB flashing.</span>
-    </esp-web-install-button>
-    <br/>
+    <p>16-Bit Cyberpunk RPG for <b>M5Stack Tab5 (ESP32-P4)</b>.<br/>Works in <b>Opera, Chrome &amp; Edge</b> via WebSerial.</p>
+    <button id="flashBtn" class="btn">CONNECT &amp; FLASH TAB5</button>
+    <div id="log">Ready. Click CONNECT &amp; FLASH TAB5 to select your USB serial port...</div>
     <a class="dl" href="VoidRunner-tab5-merged.bin" download>Download VoidRunner-tab5-merged.bin (offset 0x0)</a>
-    <div class="note">If the button does not open a port picker, ensure GitHub Pages Source is set to <b>GitHub Actions</b> in Repo Settings.</div>
   </div>
+  <script type="module">
+    import { ESPLoader, Transport } from "https://unpkg.com";
+    const btn = document.getElementById("flashBtn");
+    const logEl = document.getElementById("log");
+    const log = (msg) => { logEl.textContent += "\n" + msg; logEl.scrollTop = logEl.scrollHeight; };
+    if (!("serial" in navigator)) { log("ERROR: WebSerial not available in this browser."); btn.disabled = true; }
+    btn.addEventListener("click", async () => {
+      try {
+        btn.disabled = true;
+        log("Requesting Tab5 USB Serial Port...");
+        const port = await navigator.serial.requestPort();
+        const transport = new Transport(port, true);
+        const loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean(){}, writeLine: log, write: (s) => { logEl.textContent += s; } } });
+        log("Connecting to ESP32-P4 bootloader...");
+        await loader.main();
+        log("Downloading VoidRunner-tab5-merged.bin...");
+        const resp = await fetch("VoidRunner-tab5-merged.bin");
+        if (!resp.ok) throw new Error("Firmware binary not found (HTTP " + resp.status + ")");
+        const buf = await resp.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binStr = "";
+        for (let i = 0; i < bytes.length; i++) binStr += String.fromCharCode(bytes[i]);
+        log("Flashing " + bytes.length + " bytes to 0x0...");
+        await loader.writeFlash({
+          fileArray: [{ data: binStr, address: 0x0 }],
+          flashSize: "keep", flashMode: "keep", flashFreq: "keep", eraseAll: false, compress: true,
+          reportProgress: (idx, written, total) => { if (written === total || written % 131072 === 0) log("Progress: " + Math.round((written / total) * 100) + "%"); }
+        });
+        log("DONE! Resetting Tab5...");
+        await transport.setDTR(false);
+        await new Promise(r => setTimeout(r, 100));
+        await transport.setDTR(true);
+        await transport.disconnect();
+      } catch (e) {
+        log("ERROR: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>
