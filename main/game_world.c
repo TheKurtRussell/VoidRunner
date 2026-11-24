@@ -1,3 +1,4 @@
+#include "esp_heap_caps.h"
 #include "game_world.h"
 #include "assets/vr_assets.h"
 #include <stdio.h>
