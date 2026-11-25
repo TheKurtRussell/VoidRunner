@@ -56,12 +56,7 @@ static void io_expander_init(i2c_master_bus_handle_t bus) {
     i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x43, .scl_speed_hz = 100000 };
     if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
         // Only enable LCD_RST (P4) and TP_RST (P5) on expander 0x43; never touch 0x44 power/supervisor pins
-        uint8_t dir = { 0x03, 0x30 };
-        uint8_t out = { 0x05, 0x30 };
-        uint8_t hiz = { 0x07, 0xCF };
-        i2c_master_transmit(dev, dir, 2, 50);
-        i2c_master_transmit(dev, out, 2, 50);
-        i2c_master_transmit(dev, hiz, 2, 50);
+        uint8_t b0=0x03, b1=0x30; uint8_t pkt[2]; pkt[0]=b0; pkt[1]=b1; i2c_master_transmit(dev, pkt, 2, 50); pkt[0]=0x05; pkt[1]=0x30; i2c_master_transmit(dev, pkt, 2, 50); pkt[0]=0x07; pkt[1]=0xCF; i2c_master_transmit(dev, pkt, 2, 50);
         i2c_master_bus_rm_device(dev);
     }
     vTaskDelay(pdMS_TO_TICKS(50));
