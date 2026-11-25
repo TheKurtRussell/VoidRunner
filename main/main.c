@@ -57,14 +57,20 @@ static void lvgl_task(void *arg) {
     }
 }
 
-static void io_expander_init(i2c_master_bus_handle_t bus) {
+static void tab5_io_reset_lcd_and_touch(i2c_master_bus_handle_t bus) {
     i2c_master_dev_handle_t dev = NULL;
     i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x43, .scl_speed_hz = 100000 };
     if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
-        uint16_t cmd = 0x3003; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50); cmd = 0x3005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50); cmd = 0xCF07; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        uint16_t cmd;
+        cmd = 0x3003; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        cmd = 0xCF07; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        // Pulse LCD_RST (P4) & TP_RST (P5) LOW then HIGH
+        cmd = 0x0005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        vTaskDelay(pdMS_TO_TICKS(25));
+        cmd = 0x3005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        vTaskDelay(pdMS_TO_TICKS(120));
         i2c_master_bus_rm_device(dev);
     }
-    vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void app_main(void) {
@@ -74,7 +80,7 @@ void app_main(void) {
         .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,
     };
     if (i2c_new_master_bus(&i2c_cfg, &i2c_bus) == ESP_OK) {
-        io_expander_init(i2c_bus);
+        tab5_io_reset_lcd_and_touch(i2c_bus);
     }
 
     esp_ldo_channel_handle_t ldo_mipi = NULL;
@@ -92,21 +98,31 @@ void app_main(void) {
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 60, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
-        .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40, .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20 },
+        .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 2, .hsync_back_porch = 156, .hsync_front_porch = 16, .vsync_pulse_width = 2, .vsync_back_porch = 16, .vsync_front_porch = 16 },
         .flags.use_dma2d = true,
     };
     st7123_vendor_config_t vendor_cfg = { .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg } };
-    esp_lcd_panel_dev_config_t lcd_cfg = { .reset_gpio_num = GPIO_NUM_27, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16, .vendor_config = &vendor_cfg };
+    esp_lcd_panel_dev_config_t lcd_cfg = { .reset_gpio_num = GPIO_NUM_NC, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16, .vendor_config = &vendor_cfg };
     esp_lcd_new_panel_st7123(io_handle, &lcd_cfg, &disp_panel);
     esp_lcd_panel_reset(disp_panel);
     esp_lcd_panel_init(disp_panel);
-    esp_lcd_dpi_panel_event_callbacks_t cbs = { .on_color_trans_done = on_dpi_trans_done };
-    esp_lcd_dpi_panel_register_event_callbacks(disp_panel, &cbs, NULL);
     esp_lcd_panel_disp_on_off(disp_panel, true);
 
     gpio_config_t bl_cfg = { .pin_bit_mask = (1ULL << 22), .mode = GPIO_MODE_OUTPUT };
     gpio_config(&bl_cfg);
     gpio_set_level(GPIO_NUM_22, 1);
+
+    // Direct hardware sanity flash (cyan strip) before LVGL takes over
+    uint16_t *test_bar = heap_caps_malloc(720 * 120 * 2, MALLOC_CAP_SPIRAM);
+    if (test_bar) {
+        for (int i = 0; i < 720 * 120; i++) test_bar[i] = 0x07FF;
+        esp_lcd_panel_draw_bitmap(disp_panel, 0, 0, 720, 120, test_bar);
+        vTaskDelay(pdMS_TO_TICKS(400));
+        heap_caps_free(test_bar);
+    }
+
+    esp_lcd_dpi_panel_event_callbacks_t cbs = { .on_color_trans_done = on_dpi_trans_done };
+    esp_lcd_dpi_panel_register_event_callbacks(disp_panel, &cbs, NULL);
 
     if (i2c_bus) {
         esp_lcd_panel_io_handle_t tp_io = NULL;
