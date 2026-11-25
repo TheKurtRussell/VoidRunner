@@ -61,10 +61,7 @@ static void io_expander_init(i2c_master_bus_handle_t bus) {
     i2c_master_dev_handle_t dev = NULL;
     i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x43, .scl_speed_hz = 100000 };
     if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
-        uint8_t pkt;
-        pkt = 0x03; pkt = 0x30; i2c_master_transmit(dev, pkt, 2, 50);
-        pkt = 0x05; pkt = 0x30; i2c_master_transmit(dev, pkt, 2, 50);
-        pkt = 0x07; pkt = 0xCF; i2c_master_transmit(dev, pkt, 2, 50);
+        uint16_t cmd = 0x3003; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50); cmd = 0x3005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50); cmd = 0xCF07; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
         i2c_master_bus_rm_device(dev);
     }
     vTaskDelay(pdMS_TO_TICKS(50));
