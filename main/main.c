@@ -62,11 +62,11 @@ static void tab5_io_reset_lcd_and_touch(i2c_master_bus_handle_t bus) {
     i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x43, .scl_speed_hz = 100000 };
     if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
         uint16_t cmd;
-        cmd = 0x3003; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
-        cmd = 0xCF07; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        cmd = 0xB003; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        cmd = 0x4F07; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
         cmd = 0x0005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
         vTaskDelay(pdMS_TO_TICKS(25));
-        cmd = 0x3005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        cmd = 0xB005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
         vTaskDelay(pdMS_TO_TICKS(120));
         i2c_master_bus_rm_device(dev);
     }
@@ -101,8 +101,8 @@ void app_main(void) {
         .flags.use_dma2d = true,
     };
     st7123_vendor_config_t vendor_cfg = {
-        .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg, .lane_num = 2 },
-        .flags = { .use_mipi_interface = 1 },
+        .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg },
+        
     };
     esp_lcd_panel_dev_config_t lcd_cfg = { .reset_gpio_num = GPIO_NUM_NC, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16, .vendor_config = &vendor_cfg };
     esp_lcd_new_panel_st7123(io_handle, &lcd_cfg, &disp_panel);
