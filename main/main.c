@@ -16,6 +16,7 @@
 static esp_lcd_panel_handle_t disp_panel = NULL;
 static esp_lcd_touch_handle_t tp = NULL;
 static lv_display_t *lv_disp = NULL;
+static uint8_t *rot_buf = NULL;
 static bool touch_ready = false;
 
 static void lvgl_tick_cb(void *arg) { lv_tick_inc(5); }
@@ -26,7 +27,12 @@ static bool on_dpi_trans_done(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_ev
 }
 
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-    esp_lcd_panel_draw_bitmap(disp_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
+    int32_t w = lv_area_get_width(area);
+    int32_t h = lv_area_get_height(area);
+    lv_area_t rot_area = *area;
+    lv_display_rotate_area(disp, &rot_area);
+    lv_draw_sw_rotate(px_map, rot_buf, w, h, w * 2, lv_area_get_width(&rot_area) * 2, LV_DISPLAY_ROTATION_90, LV_COLOR_FORMAT_RGB565);
+    esp_lcd_panel_draw_bitmap(disp_panel, rot_area.x1, rot_area.y1, rot_area.x2 + 1, rot_area.y2 + 1, rot_buf);
 }
 
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -55,8 +61,10 @@ static void io_expander_init(i2c_master_bus_handle_t bus) {
     i2c_master_dev_handle_t dev = NULL;
     i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x43, .scl_speed_hz = 100000 };
     if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
-        // Only enable LCD_RST (P4) and TP_RST (P5) on expander 0x43; never touch 0x44 power/supervisor pins
-        uint8_t b0=0x03, b1=0x30; uint8_t pkt[2]; pkt[0]=b0; pkt[1]=b1; i2c_master_transmit(dev, pkt, 2, 50); pkt[0]=0x05; pkt[1]=0x30; i2c_master_transmit(dev, pkt, 2, 50); pkt[0]=0x07; pkt[1]=0xCF; i2c_master_transmit(dev, pkt, 2, 50);
+        uint8_t pkt;
+        pkt = 0x03; pkt = 0x30; i2c_master_transmit(dev, pkt, 2, 50);
+        pkt = 0x05; pkt = 0x30; i2c_master_transmit(dev, pkt, 2, 50);
+        pkt = 0x07; pkt = 0xCF; i2c_master_transmit(dev, pkt, 2, 50);
         i2c_master_bus_rm_device(dev);
     }
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -86,7 +94,7 @@ void app_main(void) {
 
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 48, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
+        .dpi_clock_freq_mhz = 60, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
         .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40, .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20 },
         .flags.use_dma2d = true,
     };
@@ -122,9 +130,10 @@ void app_main(void) {
     esp_timer_start_periodic(tick_timer, 5000);
 
     lv_disp = lv_display_create(720, 1280);
-    size_t buf_sz = 720 * 160 * sizeof(uint16_t);
+    size_t buf_sz = 1280 * 120 * sizeof(uint16_t);
     void *buf1 = heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM);
     void *buf2 = heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM);
+    rot_buf = heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM);
     lv_display_set_buffers(lv_disp, buf1, buf2, buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(lv_disp, disp_flush_cb);
     lv_display_set_rotation(lv_disp, LV_DISPLAY_ROTATION_90);
