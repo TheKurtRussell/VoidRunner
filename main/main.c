@@ -1,4 +1,4 @@
-#include "bsp/m5stack_tab5.h"
+#include "bsp/esp-bsp.h"
 #include "game_world.h"
 
 void app_main(void) {
@@ -9,11 +9,11 @@ void app_main(void) {
         .flags = { .buff_dma = false, .buff_spiram = true, .sw_rotate = true },
     };
     lv_display_t *disp = bsp_display_start_with_config(&cfg);
+    bsp_display_backlight_on();
+    bsp_display_lock(0);
     if (disp) {
         lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_90);
     }
-    bsp_display_backlight_on();
-    bsp_display_lock(0);
     vr_game_init(lv_scr_act());
     bsp_display_unlock();
 }
