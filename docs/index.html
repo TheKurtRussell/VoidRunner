@@ -79,9 +79,9 @@
         let fw = new Uint8Array(await resp.arrayBuffer());
         let blkSize = 0x400; let numBlocks = Math.ceil(fw.length / blkSize);
         log("Erasing & preparing " + fw.length + " bytes (" + numBlocks + " blocks)...");
-        let beg = new Uint8Array(20); let bdv = new DataView(beg.buffer);
-        bdv.setUint32(0, fw.length, true); bdv.setUint32(4, numBlocks, true); bdv.setUint32(8, blkSize, true); bdv.setUint32(12, 0x0, true); bdv.setUint32(16, 0, true);
-        await writer.write(buildCmd(0x02, beg)); await readResp(reader, 15000);
+        let beg = new Uint8Array(16); let bdv = new DataView(beg.buffer);
+        bdv.setUint32(0, fw.length, true); bdv.setUint32(4, numBlocks, true); bdv.setUint32(8, blkSize, true); bdv.setUint32(12, 0x0, true); 
+        await writer.write(buildCmd(0x02, beg)); await readResp(reader, 30000);
         for (let seq = 0; seq < numBlocks; seq++) {
           let chunk = new Uint8Array(blkSize); chunk.fill(0xFF);
           let slice = fw.subarray(seq * blkSize, Math.min((seq + 1) * blkSize, fw.length));
