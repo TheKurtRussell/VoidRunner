@@ -88,7 +88,7 @@ void app_main(void) {
 
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 60, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
+        .dpi_clock_freq_mhz = 42, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
         .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40, .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20 },
         .flags.use_dma2d = true,
     };
