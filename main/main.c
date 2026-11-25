@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_ldo_regulator.h"
 #include "esp_lcd_mipi_dsi.h"
@@ -13,6 +14,7 @@
 #include "lvgl.h"
 #include "game_world.h"
 
+static const char *TAG = "VOIDRUNNER";
 static esp_lcd_panel_handle_t disp_panel = NULL;
 static esp_lcd_touch_handle_t tp = NULL;
 static lv_display_t *lv_disp = NULL;
@@ -64,10 +66,10 @@ static void tab5_io_reset_lcd_and_touch(i2c_master_bus_handle_t bus) {
         uint16_t cmd;
         cmd = 0xB003; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
         cmd = 0x4F07; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
-        cmd = 0x0005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
-        vTaskDelay(pdMS_TO_TICKS(25));
+        cmd = 0x8005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        vTaskDelay(pdMS_TO_TICKS(50));
         cmd = 0xB005; i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
-        vTaskDelay(pdMS_TO_TICKS(120));
+        vTaskDelay(pdMS_TO_TICKS(150));
         i2c_master_bus_rm_device(dev);
     }
 }
@@ -84,41 +86,39 @@ void app_main(void) {
 
     esp_ldo_channel_handle_t ldo_mipi = NULL;
     esp_ldo_channel_config_t ldo_cfg = { .chan_id = 3, .voltage_mv = 2500 };
-    esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi);
+    ESP_LOGI(TAG, "LDO3: %d", esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi));
 
     esp_lcd_dsi_bus_handle_t dsi_bus = NULL;
     esp_lcd_dsi_bus_config_t bus_cfg = ST7123_PANEL_BUS_DSI_2CH_CONFIG();
-    esp_lcd_new_dsi_bus(&bus_cfg, &dsi_bus);
+    bus_cfg.lane_bit_rate_mbps = 750;
+    ESP_LOGI(TAG, "DSI bus: %d", esp_lcd_new_dsi_bus(&bus_cfg, &dsi_bus));
 
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_dbi_io_config_t dbi_cfg = ST7123_PANEL_IO_DBI_CONFIG();
-    esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &io_handle);
+    ESP_LOGI(TAG, "DBI IO: %d", esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &io_handle));
 
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 60, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
+        .dpi_clock_freq_mhz = 48, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
         .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 2, .hsync_back_porch = 156, .hsync_front_porch = 16, .vsync_pulse_width = 2, .vsync_back_porch = 16, .vsync_front_porch = 16 },
         .flags.use_dma2d = true,
     };
-    st7123_vendor_config_t vendor_cfg = {
-        .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg },
-        
-    };
+    st7123_vendor_config_t vendor_cfg = { .mipi_config = { .dsi_bus = dsi_bus, .dpi_config = &dpi_cfg } };
     esp_lcd_panel_dev_config_t lcd_cfg = { .reset_gpio_num = GPIO_NUM_NC, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16, .vendor_config = &vendor_cfg };
-    esp_lcd_new_panel_st7123(io_handle, &lcd_cfg, &disp_panel);
-    esp_lcd_panel_reset(disp_panel);
-    esp_lcd_panel_init(disp_panel);
-    esp_lcd_panel_disp_on_off(disp_panel, true);
+    ESP_LOGI(TAG, "new_panel: %d", esp_lcd_new_panel_st7123(io_handle, &lcd_cfg, &disp_panel));
+    ESP_LOGI(TAG, "panel_reset: %d", esp_lcd_panel_reset(disp_panel));
+    ESP_LOGI(TAG, "panel_init: %d", esp_lcd_panel_init(disp_panel));
+    ESP_LOGI(TAG, "panel_on: %d", esp_lcd_panel_disp_on_off(disp_panel, true));
 
     gpio_config_t bl_cfg = { .pin_bit_mask = (1ULL << 22), .mode = GPIO_MODE_OUTPUT };
     gpio_config(&bl_cfg);
     gpio_set_level(GPIO_NUM_22, 1);
 
-    uint16_t *test_bar = heap_caps_malloc(720 * 120 * 2, MALLOC_CAP_SPIRAM);
+    uint16_t *test_bar = heap_caps_malloc(720 * 200 * 2, MALLOC_CAP_SPIRAM);
     if (test_bar) {
-        for (int i = 0; i < 720 * 120; i++) test_bar[i] = 0x07FF;
-        esp_lcd_panel_draw_bitmap(disp_panel, 0, 0, 720, 120, test_bar);
-        vTaskDelay(pdMS_TO_TICKS(400));
+        for (int i = 0; i < 720 * 200; i++) test_bar[i] = 0x07FF;
+        ESP_LOGI(TAG, "draw_test: %d", esp_lcd_panel_draw_bitmap(disp_panel, 0, 0, 720, 200, test_bar));
+        vTaskDelay(pdMS_TO_TICKS(500));
         heap_caps_free(test_bar);
     }
 
