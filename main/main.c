@@ -15,13 +15,18 @@
 
 static esp_lcd_panel_handle_t disp_panel = NULL;
 static esp_lcd_touch_handle_t tp = NULL;
+static lv_display_t *lv_disp = NULL;
 static bool touch_ready = false;
 
 static void lvgl_tick_cb(void *arg) { lv_tick_inc(5); }
 
+static bool on_dpi_trans_done(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx) {
+    if (lv_disp) lv_display_flush_ready(lv_disp);
+    return false;
+}
+
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     esp_lcd_panel_draw_bitmap(disp_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
-    lv_display_flush_ready(disp);
 }
 
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -47,19 +52,17 @@ static void lvgl_task(void *arg) {
 }
 
 static void io_expander_init(i2c_master_bus_handle_t bus) {
-    uint8_t addrs[2] = { 0x43, 0x44 };
-    for (int i = 0; i < 2; i++) {
-        i2c_master_dev_handle_t dev = NULL;
-        i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addrs[i], .scl_speed_hz = 100000 };
-        if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
-            uint8_t dir[2] = { 0x03, 0xFF };
-            uint8_t out[2] = { 0x05, 0xFF };
-            uint8_t hiz[2] = { 0x07, 0x00 };
-            i2c_master_transmit(dev, dir, 2, 50);
-            i2c_master_transmit(dev, out, 2, 50);
-            i2c_master_transmit(dev, hiz, 2, 50);
-            i2c_master_bus_rm_device(dev);
-        }
+    i2c_master_dev_handle_t dev = NULL;
+    i2c_device_config_t dcfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x43, .scl_speed_hz = 100000 };
+    if (i2c_master_bus_add_device(bus, &dcfg, &dev) == ESP_OK) {
+        // Only enable LCD_RST (P4) and TP_RST (P5) on expander 0x43; never touch 0x44 power/supervisor pins
+        uint8_t dir = { 0x03, 0x30 };
+        uint8_t out = { 0x05, 0x30 };
+        uint8_t hiz = { 0x07, 0xCF };
+        i2c_master_transmit(dev, dir, 2, 50);
+        i2c_master_transmit(dev, out, 2, 50);
+        i2c_master_transmit(dev, hiz, 2, 50);
+        i2c_master_bus_rm_device(dev);
     }
     vTaskDelay(pdMS_TO_TICKS(50));
 }
@@ -88,7 +91,7 @@ void app_main(void) {
 
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 42, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
+        .dpi_clock_freq_mhz = 34, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
         .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 40, .hsync_back_porch = 140, .hsync_front_porch = 40, .vsync_pulse_width = 4, .vsync_back_porch = 20, .vsync_front_porch = 20 },
         .flags.use_dma2d = true,
     };
@@ -97,6 +100,8 @@ void app_main(void) {
     esp_lcd_new_panel_st7123(io_handle, &lcd_cfg, &disp_panel);
     esp_lcd_panel_reset(disp_panel);
     esp_lcd_panel_init(disp_panel);
+    esp_lcd_dpi_panel_event_callbacks_t cbs = { .on_color_trans_done = on_dpi_trans_done };
+    esp_lcd_dpi_panel_register_event_callbacks(disp_panel, &cbs, NULL);
     esp_lcd_panel_disp_on_off(disp_panel, true);
 
     gpio_config_t bl_cfg = { .pin_bit_mask = (1ULL << 22), .mode = GPIO_MODE_OUTPUT };
@@ -121,13 +126,13 @@ void app_main(void) {
     esp_timer_create(&tick_args, &tick_timer);
     esp_timer_start_periodic(tick_timer, 5000);
 
-    lv_display_t *disp = lv_display_create(720, 1280);
+    lv_disp = lv_display_create(720, 1280);
     size_t buf_sz = 720 * 160 * sizeof(uint16_t);
     void *buf1 = heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM);
     void *buf2 = heap_caps_malloc(buf_sz, MALLOC_CAP_SPIRAM);
-    lv_display_set_buffers(disp, buf1, buf2, buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_display_set_flush_cb(disp, disp_flush_cb);
-    lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_90);
+    lv_display_set_buffers(lv_disp, buf1, buf2, buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(lv_disp, disp_flush_cb);
+    lv_display_set_rotation(lv_disp, LV_DISPLAY_ROTATION_90);
 
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
