@@ -14,7 +14,13 @@ static int nuyen=1250,karma=4,hp_phys=10,hp_stun=10,active_payout=0;
 static bool contract_active=false;
 static lv_obj_t *canvas,*lbl_stats,*lbl_log,*dlg_panel,*dlg_text,*btn_accept;
 static uint16_t *canvas_buf;
-static void blit_2x(const uint16_t *src,int sw,int sh,int dx0,int dy0){for(int y=0;y<sh;y++)for(int x=0;x<sw;x++){uint16_t c=src[y*sw+x];if(!c)continue;for(int dy=0;dy<2;dy++)for(int dx=0;dx<2;dx++){int px=dx0+x*2+dx,py=dy0+y*2+dy;if(px>=0&&px<CANVAS_W&&py>=0&&py<CANVAS_H)canvas_buf[py*CANVAS_W+px]=c;}}}
+/* 1:1 blit with colour-key transparency (0x0000 == clear); sprites are authored
+ * at full on-screen resolution by tools/gen_assets.py */
+static void blit(const uint16_t *src,int sw,int sh,int dx0,int dy0){
+    for(int y=0;y<sh;y++){int py=dy0+y;if(py<0||py>=CANVAS_H)continue;
+        const uint16_t *row=&src[y*sw];uint16_t *drow=&canvas_buf[py*CANVAS_W];
+        for(int x=0;x<sw;x++){uint16_t c=row[x];if(!c)continue;int px=dx0+x;if(px<0||px>=CANVAS_W)continue;drow[px]=c;}}
+}
 static void iso(int gx,int gy,int *sx,int *sy){*sx=(CANVAS_W/2)+(gx-gy)*64;*sy=110+(gx+gy)*32;}
 /* one drawable placed on the iso grid; bottom-centre of the sprite sits on the
  * tile's diamond centre, so taller sprites rise above the floor */
@@ -26,7 +32,7 @@ static int vr_obj_cmp(const void *a, const void *b){
 }
 static void draw_obj(const vr_obj_t *o){
     int sx,sy; iso(o->gx,o->gy,&sx,&sy);
-    blit_2x(o->spr, o->w, o->h, sx - o->w, sy + 32 - 2*o->h);
+    blit(o->spr, o->w, o->h, sx - o->w/2, sy + 32 - o->h);
 }
 static const uint16_t *floor_tile(uint8_t v){
     return v==1?vr_tile_sidewalk : v==2?vr_tile_jackpoint : v==3?vr_tile_puddle : vr_tile_asphalt;
@@ -40,7 +46,7 @@ static void render_scene(void){
     /* floor */
     for(int gy=0;gy<MAP_H;gy++)for(int gx=0;gx<MAP_W;gx++){
         int sx,sy; iso(gx,gy,&sx,&sy);
-        blit_2x(floor_tile(street_map[gy][gx]),64,32,sx-64,sy);
+        blit(floor_tile(street_map[gy][gx]),VR_TILE_ASPHALT_W,VR_TILE_ASPHALT_H,sx-VR_TILE_ASPHALT_W/2,sy);
     }
     /* collect depth-sorted objects: a ring of buildings framing the plaza,
      * a few props, then the actors */
