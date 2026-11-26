@@ -16,8 +16,9 @@ jobs:
       image: espressif/idf:v5.5
     steps:
       - uses: actions/checkout@v4
-      - name: Generate 16-bit Pixel Art Assets
-        run: python3 tools/gen_assets.py
+      # Pixel-art assets (main/assets/vr_assets.c/.h) are generated locally with
+      # Pillow by tools/gen_assets.py and committed, so the build just compiles
+      # them — no image libraries needed in the CI container.
       - name: Build ESP32-P4 Firmware
         run: |
           . $IDF_PATH/export.sh

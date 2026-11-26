@@ -7,7 +7,7 @@
 #define MAP_H 8
 #define CANVAS_W 920
 #define CANVAS_H 540
-static const uint8_t street_map[MAP_H][MAP_W]={{1,1,1,2,1,1,1,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,1},{1,1,1,1,1,1,1,1}};
+static const uint8_t street_map[MAP_H][MAP_W]={{1,1,1,2,1,1,1,1},{1,0,0,0,0,0,0,1},{1,0,0,3,0,0,0,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,3,0,1},{1,0,0,0,0,0,0,1},{1,0,0,0,0,0,0,1},{1,1,1,1,1,1,1,1}};
 static int player_gx=3,player_gy=5,target_gx=3,target_gy=5;
 static const int johnson_gx=5,johnson_gy=2;
 static int nuyen=1250,karma=4,hp_phys=10,hp_stun=10,active_payout=0;
@@ -16,7 +16,54 @@ static lv_obj_t *canvas,*lbl_stats,*lbl_log,*dlg_panel,*dlg_text,*btn_accept;
 static uint16_t *canvas_buf;
 static void blit_2x(const uint16_t *src,int sw,int sh,int dx0,int dy0){for(int y=0;y<sh;y++)for(int x=0;x<sw;x++){uint16_t c=src[y*sw+x];if(!c)continue;for(int dy=0;dy<2;dy++)for(int dx=0;dx<2;dx++){int px=dx0+x*2+dx,py=dy0+y*2+dy;if(px>=0&&px<CANVAS_W&&py>=0&&py<CANVAS_H)canvas_buf[py*CANVAS_W+px]=c;}}}
 static void iso(int gx,int gy,int *sx,int *sy){*sx=(CANVAS_W/2)+(gx-gy)*64;*sy=110+(gx+gy)*32;}
-static void render_scene(void){for(int i=0;i<CANVAS_W*CANVAS_H;i++)canvas_buf[i]=0x0842;for(int gy=0;gy<MAP_H;gy++)for(int gx=0;gx<MAP_W;gx++){int sx,sy;iso(gx,gy,&sx,&sy);const uint16_t *t=street_map[gy][gx]==1?vr_tile_sidewalk:(street_map[gy][gx]==2?vr_tile_jackpoint:vr_tile_asphalt);blit_2x(t,64,32,sx-64,sy);}for(int s=0;s<MAP_W+MAP_H;s++){if(johnson_gx+johnson_gy==s){int jx,jy;iso(johnson_gx,johnson_gy,&jx,&jy);blit_2x(vr_sprite_johnson,32,48,jx-32,jy-64);}if(player_gx+player_gy==s){int px,py;iso(player_gx,player_gy,&px,&py);blit_2x(vr_sprite_runner,32,48,px-32,py-64);}}lv_obj_invalidate(canvas);}
+/* one drawable placed on the iso grid; bottom-centre of the sprite sits on the
+ * tile's diamond centre, so taller sprites rise above the floor */
+typedef struct { int gx, gy; const uint16_t *spr; int w, h; } vr_obj_t;
+static int vr_obj_cmp(const void *a, const void *b){
+    const vr_obj_t *x=a,*y=b;
+    int ka=(x->gx+x->gy)*64+x->gx, kb=(y->gx+y->gy)*64+y->gx;
+    return ka-kb;
+}
+static void draw_obj(const vr_obj_t *o){
+    int sx,sy; iso(o->gx,o->gy,&sx,&sy);
+    blit_2x(o->spr, o->w, o->h, sx - o->w, sy + 32 - 2*o->h);
+}
+static const uint16_t *floor_tile(uint8_t v){
+    return v==1?vr_tile_sidewalk : v==2?vr_tile_jackpoint : v==3?vr_tile_puddle : vr_tile_asphalt;
+}
+static void render_scene(void){
+    /* vertical night-sky gradient behind the city */
+    for(int y=0;y<CANVAS_H;y++){
+        uint16_t c = y<CANVAS_H/2 ? 0x1067 : 0x0842;
+        for(int x=0;x<CANVAS_W;x++) canvas_buf[y*CANVAS_W+x]=c;
+    }
+    /* floor */
+    for(int gy=0;gy<MAP_H;gy++)for(int gx=0;gx<MAP_W;gx++){
+        int sx,sy; iso(gx,gy,&sx,&sy);
+        blit_2x(floor_tile(street_map[gy][gx]),64,32,sx-64,sy);
+    }
+    /* collect depth-sorted objects: a ring of buildings framing the plaza,
+     * a few props, then the actors */
+    vr_obj_t ob[80]; int n=0;
+    for(int gy=-1;gy<=MAP_H;gy++)for(int gx=-1;gx<=MAP_W;gx++){
+        if(!(gx==-1||gx==MAP_W||gy==-1||gy==MAP_H)) continue;
+        if(gx==3&&gy==-1)
+            ob[n++]=(vr_obj_t){gx,gy,vr_building_door,VR_BUILDING_DOOR_W,VR_BUILDING_DOOR_H};
+        else if((gx+gy)&1)
+            ob[n++]=(vr_obj_t){gx,gy,vr_building_mag,VR_BUILDING_MAG_W,VR_BUILDING_MAG_H};
+        else
+            ob[n++]=(vr_obj_t){gx,gy,vr_building_cyan,VR_BUILDING_CYAN_W,VR_BUILDING_CYAN_H};
+    }
+    ob[n++]=(vr_obj_t){6,-1,vr_sign,VR_SIGN_W,VR_SIGN_H};
+    ob[n++]=(vr_obj_t){1,-1,vr_lamp,VR_LAMP_W,VR_LAMP_H};
+    ob[n++]=(vr_obj_t){-1,5,vr_lamp,VR_LAMP_W,VR_LAMP_H};
+    ob[n++]=(vr_obj_t){0,7,vr_crate,VR_CRATE_W,VR_CRATE_H};
+    ob[n++]=(vr_obj_t){johnson_gx,johnson_gy,vr_sprite_johnson,VR_SPRITE_JOHNSON_W,VR_SPRITE_JOHNSON_H};
+    ob[n++]=(vr_obj_t){player_gx,player_gy,vr_sprite_runner,VR_SPRITE_RUNNER_W,VR_SPRITE_RUNNER_H};
+    qsort(ob,n,sizeof(vr_obj_t),vr_obj_cmp);
+    for(int i=0;i<n;i++) draw_obj(&ob[i]);
+    lv_obj_invalidate(canvas);
+}
 static void update_hud(void){char b[128];snprintf(b,sizeof(b),"NUYEN: %d Y  |  KARMA: %d  |  PHYS: %d/10  STUN: %d/10",nuyen,karma,hp_phys,hp_stun);lv_label_set_text(lbl_stats,b);}
 static void open_johnson(void){if(!contract_active){const char *t[]={"Renraku Sub-Node","Aztechnology Courier","Fuchi Data Vault"};active_payout=850+(rand()%6)*150;char m[256];snprintf(m,sizeof(m),"MR. JOHNSON: \"Evening, chummer. Need an extraction from a %s two blocks east. Clean run pays %d Nuyen. You in?\"",t[rand()%3],active_payout);lv_label_set_text(dlg_text,m);lv_obj_clear_flag(btn_accept,LV_OBJ_FLAG_HIDDEN);}else{lv_label_set_text(dlg_text,"MR. JOHNSON: \"Clock is ticking, runner. Hit the Cyan Jackpoint Pad to deploy.\"");lv_obj_add_flag(btn_accept,LV_OBJ_FLAG_HIDDEN);}lv_obj_clear_flag(dlg_panel,LV_OBJ_FLAG_HIDDEN);}
 static void on_accept(lv_event_t *e){contract_active=true;lv_obj_add_flag(dlg_panel,LV_OBJ_FLAG_HIDDEN);char l[160];snprintf(l,sizeof(l),"> CONTRACT ACCEPTED (%d Nuyen). Step onto the CYAN JACKPOINT PAD to run!",active_payout);lv_label_set_text(lbl_log,l);}
