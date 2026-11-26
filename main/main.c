@@ -87,6 +87,9 @@ void app_main(void) {
     esp_ldo_channel_handle_t ldo_mipi = NULL;
     esp_ldo_channel_config_t ldo_cfg = { .chan_id = 3, .voltage_mv = 2500 };
     ESP_LOGI(TAG, "LDO3: %d", esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi));
+    esp_ldo_channel_handle_t ldo_mipi18 = NULL;
+    esp_ldo_channel_config_t ldo_cfg18 = { .chan_id = 4, .voltage_mv = 1800 };
+    ESP_LOGI(TAG, "LDO4: %d", esp_ldo_acquire_channel(&ldo_cfg18, &ldo_mipi18));
 
     esp_lcd_dsi_bus_handle_t dsi_bus = NULL;
     esp_lcd_dsi_bus_config_t bus_cfg = ST7123_PANEL_BUS_DSI_2CH_CONFIG();
