@@ -1,118 +1,221 @@
-#include "esp_heap_caps.h"
+/*
+ * VoidRunner — cinematic visual-novel engine.
+ *
+ * Painted scenes + portraits are embedded as JPEGs and decoded on the ESP32-P4
+ * (esp_jpeg) into RGB565 canvas buffers. A node graph drives narration, speaker
+ * dialogue, branching choices, and nuyen/karma state. No tile engine.
+ */
+#include "lvgl.h"
 #include "game_world.h"
-#include "assets/vr_assets.h"
+#include "esp_heap_caps.h"
+#include "jpeg_decoder.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
-#define MAP_W 8
-#define MAP_H 8
-#define CANVAS_W 920
-#define CANVAS_H 540
-/* interior gallery floor: 0 marble, 1 marble (alt vein), 2 data terminal, 3 rug */
-static const uint8_t street_map[MAP_H][MAP_W]={
-    {1,0,1,0,1,0,1,0},
-    {0,1,0,1,0,1,0,1},
-    {1,0,1,0,1,2,1,0},
-    {0,1,0,1,0,1,0,1},
-    {1,0,1,3,3,3,1,0},
-    {0,1,0,3,3,3,0,1},
-    {1,0,1,0,1,0,1,0},
-    {0,1,0,1,0,1,0,1}};
-static int player_gx=3,player_gy=6,target_gx=3,target_gy=6;
-static const int johnson_gx=4,johnson_gy=1;
-static int nuyen=1250,karma=4,hp_phys=10,hp_stun=10,active_payout=0;
-static bool contract_active=false;
-static lv_obj_t *canvas,*lbl_stats,*lbl_log,*dlg_panel,*dlg_text,*btn_accept;
-static uint16_t *canvas_buf;
-/* 1:1 blit with colour-key transparency (0x0000 == clear); sprites are authored
- * at full on-screen resolution by tools/gen_assets.py */
-static void blit(const uint16_t *src,int sw,int sh,int dx0,int dy0){
-    for(int y=0;y<sh;y++){int py=dy0+y;if(py<0||py>=CANVAS_H)continue;
-        const uint16_t *row=&src[y*sw];uint16_t *drow=&canvas_buf[py*CANVAS_W];
-        for(int x=0;x<sw;x++){uint16_t c=row[x];if(!c)continue;int px=dx0+x;if(px<0||px>=CANVAS_W)continue;drow[px]=c;}}
-}
-static void iso(int gx,int gy,int *sx,int *sy){*sx=(CANVAS_W/2)+(gx-gy)*64;*sy=96+(gx+gy)*32;}
-/* one drawable placed on the iso grid; bottom-centre of the sprite sits on the
- * tile's diamond centre, so taller sprites rise above the floor */
-typedef struct { int gx, gy; const uint16_t *spr; int w, h; } vr_obj_t;
-static int vr_obj_cmp(const void *a, const void *b){
-    const vr_obj_t *x=a,*y=b;
-    int ka=(x->gx+x->gy)*64+x->gx, kb=(y->gx+y->gy)*64+y->gx;
-    return ka-kb;
-}
-static void draw_obj(const vr_obj_t *o){
-    int sx,sy; iso(o->gx,o->gy,&sx,&sy);
-    blit(o->spr, o->w, o->h, sx - o->w/2, sy + 32 - o->h);
-}
-static const uint16_t *floor_tile(uint8_t v){
-    return v==2?vr_tile_terminal : v==3?vr_tile_rug : v==1?vr_tile_marble2 : vr_tile_marble;
-}
-/* plot a highlighted diamond on a tile (destination feedback) */
-static void putpx(int x,int y,uint16_t c){if(x>=0&&x<CANVAS_W&&y>=0&&y<CANVAS_H)canvas_buf[y*CANVAS_W+x]=c;}
-static void mline(int x0,int y0,int x1,int y1,uint16_t c){
-    int dx=abs(x1-x0),sx=x0<x1?1:-1,dy=-abs(y1-y0),sy=y0<y1?1:-1,e=dx+dy;
-    for(;;){putpx(x0,y0,c);putpx(x0,y0-1,c);if(x0==x1&&y0==y1)break;int e2=2*e;if(e2>=dy){e+=dy;x0+=sx;}if(e2<=dx){e+=dx;y0+=sy;}}
-}
-static void draw_marker(int gx,int gy,uint16_t c){
-    int sx,sy; iso(gx,gy,&sx,&sy); int cy=sy+32;
-    mline(sx,cy-28,sx+60,cy,c); mline(sx+60,cy,sx,cy+28,c);
-    mline(sx,cy+28,sx-60,cy,c); mline(sx-60,cy,sx,cy-28,c);
-}
-static void render_scene(void){
-    /* warm interior ambience */
-    for(int y=0;y<CANVAS_H;y++){
-        uint16_t c = y<CANVAS_H/2 ? 0x2102 : 0x1081;
-        for(int x=0;x<CANVAS_W;x++) canvas_buf[y*CANVAS_W+x]=c;
-    }
-    for(int gy=0;gy<MAP_H;gy++)for(int gx=0;gx<MAP_W;gx++){
-        int sx,sy; iso(gx,gy,&sx,&sy);
-        blit(floor_tile(street_map[gy][gx]),VR_TILE_MARBLE_W,VR_TILE_MARBLE_H,sx-VR_TILE_MARBLE_W/2,sy);
-    }
-    /* destination marker sits on the floor, under the objects */
-    if(player_gx!=target_gx||player_gy!=target_gy) draw_marker(target_gx,target_gy,0x07FF);
-    /* depth-sorted objects: perimeter walls, furniture, then actors */
-    vr_obj_t ob[96]; int n=0;
-    for(int gy=-1;gy<=MAP_H;gy++)for(int gx=-1;gx<=MAP_W;gx++){
-        if(!(gx==-1||gx==MAP_W||gy==-1||gy==MAP_H)) continue;
-        if(gx==2&&gy==-1)        ob[n++]=(vr_obj_t){gx,gy,vr_wall_door,VR_WALL_DOOR_W,VR_WALL_DOOR_H};
-        else if((gx+gy)&1)       ob[n++]=(vr_obj_t){gx,gy,vr_wall_window,VR_WALL_WINDOW_W,VR_WALL_WINDOW_H};
-        else                     ob[n++]=(vr_obj_t){gx,gy,vr_wall,VR_WALL_W,VR_WALL_H};
-    }
-    static const vr_obj_t furn[]={
-        {1,1,vr_column,VR_COLUMN_W,VR_COLUMN_H},{1,6,vr_column,VR_COLUMN_W,VR_COLUMN_H},
-        {6,1,vr_column,VR_COLUMN_W,VR_COLUMN_H},{6,6,vr_column,VR_COLUMN_W,VR_COLUMN_H},
-        {7,2,vr_case,VR_CASE_W,VR_CASE_H},{6,4,vr_case,VR_CASE_W,VR_CASE_H},{1,3,vr_case,VR_CASE_W,VR_CASE_H},
-        {3,5,vr_sofa,VR_SOFA_W,VR_SOFA_H},{5,5,vr_sofa,VR_SOFA_W,VR_SOFA_H},{4,4,vr_table,VR_TABLE_W,VR_TABLE_H},
-        {2,2,vr_statue,VR_STATUE_W,VR_STATUE_H},{0,7,vr_plant,VR_PLANT_W,VR_PLANT_H},{7,0,vr_plant,VR_PLANT_W,VR_PLANT_H},
-        {6,3,vr_sprite_guard,VR_SPRITE_GUARD_W,VR_SPRITE_GUARD_H},
+#include <stdint.h>
+
+/* ---- embedded assets ---------------------------------------------------- */
+#define EMB(sym) extern const uint8_t sym##_start[] asm("_binary_" #sym "_start"); \
+                 extern const uint8_t sym##_end[]   asm("_binary_" #sym "_end");
+EMB(scn_street_jpg) EMB(scn_office_jpg) EMB(scn_gallery_jpg) EMB(scn_vault_jpg)
+EMB(por_vex_jpg) EMB(por_fixer_jpg) EMB(por_guard_jpg)
+
+typedef struct { const uint8_t *s, *e; } blob_t;
+static const blob_t scenes[] = {
+    {scn_street_jpg_start, scn_street_jpg_end},
+    {scn_office_jpg_start, scn_office_jpg_end},
+    {scn_gallery_jpg_start, scn_gallery_jpg_end},
+    {scn_vault_jpg_start, scn_vault_jpg_end},
+};
+static const blob_t portraits[] = {
+    {por_vex_jpg_start, por_vex_jpg_end},
+    {por_fixer_jpg_start, por_fixer_jpg_end},
+    {por_guard_jpg_start, por_guard_jpg_end},
+};
+enum { SC_STREET, SC_OFFICE, SC_GALLERY, SC_VAULT };
+enum { P_VEX, P_FIXER, P_GUARD };
+
+/* ---- story graph -------------------------------------------------------- */
+typedef struct { const char *label; int next; int dnuyen; int dkarma; } vn_choice_t;
+typedef struct {
+    int scene;              /* -1 = keep current background */
+    int portrait;           /* -1 = none (narration) */
+    const char *speaker;    /* NULL = narration */
+    const char *text;
+    vn_choice_t choices[3]; /* label NULL = unused */
+} vn_node_t;
+
+static const vn_node_t story[] = {
+/*0*/ { SC_STREET, -1, NULL,
+        "Rain hammers the Seattle Barrens. Neon bleeds down the glass and pools in the gutters. "
+        "Your commlink buzzes against your ribs — an encrypted ping. Vex has work.",
+        { {"Answer it \xE2\x96\xB8", 1, 0, 0}, {0}, {0} } },
+/*1*/ { SC_OFFICE, P_VEX, "VEX",
+        "\"Evening, chummer. Saeder-Krupp moved a prototype deck into the downtown gallery. "
+        "Corp security's running a skeleton crew tonight. Clean grab. You in?\"",
+        { {"Take the job", 2, 0, 0}, {"How much?", 3, 0, 0}, {"Walk away", 4, 0, 0} } },
+/*2*/ { -1, P_VEX, "VEX",
+        "\"Knew I called the right runner. Eight-k nuyen on delivery. Don't get sentimental "
+        "with the merch — in and out.\"",
+        { {"Head to the gallery \xE2\x96\xB8", 5, 0, 1}, {0}, {0} } },
+/*3*/ { -1, P_VEX, "VEX",
+        "\"Price? Twelve-five. I'll wire half to your credstick now as a show of faith. "
+        "The rest when the deck's in my hands.\"",
+        { {"Take it (6,250 up front)", 5, 6250, 0}, {"Still too risky — walk", 4, 0, 0} } },
+/*4*/ { SC_STREET, -1, NULL,
+        "You let the ping ring out. Some runs aren't worth the body bag. The rain keeps falling, "
+        "and the credstick stays light. Maybe next time, chummer.",
+        { {"Reconsider", 1, 0, 0}, {0}, {0} } },
+/*5*/ { SC_GALLERY, -1, NULL,
+        "Midnight. The gallery's spires bleed violet into the storm. Two ways in: a dark service "
+        "door down the alley, or the lit marble lobby out front.",
+        { {"Slip in the side", 6, 0, 1}, {"Stroll through the front", 7, 0, -1} } },
+/*6*/ { SC_VAULT, P_GUARD, "SECURITY",
+        "A patrol light sweeps the corridor. You melt into the dark between display cases and hold "
+        "your breath. Boots pass within a meter, then recede. You're through.",
+        { {"Reach the vault \xE2\x96\xB8", 8, 8000, 1}, {0}, {0} } },
+/*7*/ { SC_VAULT, P_GUARD, "SECURITY",
+        "\"Hey! The gallery's closed, pal—\" The guard reaches for his radio. You move first. "
+        "It's messy and loud, but the corridor's yours.",
+        { {"Reach the vault \xE2\x96\xB8", 8, 8000, -2}, {0}, {0} } },
+/*8*/ { -1, -1, NULL,
+        "The prototype deck hums in its cradle, haloed in cyan. You lift it, and the case alarm "
+        "stays dark — clean. Sixty seconds to extraction. Vex is going to owe you.\n\n[ END OF PROLOGUE ]",
+        { {"Run it again", 1, 0, 0}, {0}, {0} } },
+};
+
+/* ---- state + widgets ---------------------------------------------------- */
+static int nuyen = 2000, karma = 0, cur_node = 0, cur_scene = -1;
+static uint16_t *bg_buf, *por_buf;
+#define BGW 1280
+#define BGH 720
+#define PW 192
+#define PH 240
+static lv_obj_t *bg_canvas, *por_canvas, *panel, *lbl_speaker, *lbl_text, *lbl_hud;
+static lv_obj_t *btn[3], *btn_lbl[3];
+
+static void decode_jpg(const blob_t *b, uint16_t *out, uint32_t outsz) {
+    esp_jpeg_image_cfg_t cfg = {
+        .indata = (uint8_t *)b->s,
+        .indata_size = (uint32_t)(b->e - b->s),
+        .outbuf = (uint8_t *)out,
+        .outbuf_size = outsz,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale = JPEG_IMAGE_SCALE_0,
+        .flags = { .swap_color_bytes = 0 },
     };
-    for(unsigned i=0;i<sizeof(furn)/sizeof(furn[0]);i++) ob[n++]=furn[i];
-    ob[n++]=(vr_obj_t){johnson_gx,johnson_gy,vr_sprite_johnson,VR_SPRITE_JOHNSON_W,VR_SPRITE_JOHNSON_H};
-    ob[n++]=(vr_obj_t){player_gx,player_gy,vr_sprite_runner,VR_SPRITE_RUNNER_W,VR_SPRITE_RUNNER_H};
-    qsort(ob,n,sizeof(vr_obj_t),vr_obj_cmp);
-    for(int i=0;i<n;i++) draw_obj(&ob[i]);
-    lv_obj_invalidate(canvas);
-}
-static void update_hud(void){char b[128];snprintf(b,sizeof(b),"NUYEN: %d Y  |  KARMA: %d  |  PHYS: %d/10  STUN: %d/10",nuyen,karma,hp_phys,hp_stun);lv_label_set_text(lbl_stats,b);}
-static void open_johnson(void){if(!contract_active){const char *t[]={"Renraku Sub-Node","Aztechnology Courier","Fuchi Data Vault"};active_payout=850+(rand()%6)*150;char m[256];snprintf(m,sizeof(m),"MR. JOHNSON: \"Evening, chummer. Need an extraction from a %s two blocks east. Clean run pays %d Nuyen. You in?\"",t[rand()%3],active_payout);lv_label_set_text(dlg_text,m);lv_obj_clear_flag(btn_accept,LV_OBJ_FLAG_HIDDEN);}else{lv_label_set_text(dlg_text,"MR. JOHNSON: \"Clock is ticking, runner. Reach the glowing data terminal to jack in.\"");lv_obj_add_flag(btn_accept,LV_OBJ_FLAG_HIDDEN);}lv_obj_clear_flag(dlg_panel,LV_OBJ_FLAG_HIDDEN);}
-static void on_accept(lv_event_t *e){contract_active=true;lv_obj_add_flag(dlg_panel,LV_OBJ_FLAG_HIDDEN);char l[160];snprintf(l,sizeof(l),"> CONTRACT ACCEPTED (%d Nuyen). Reach the glowing DATA TERMINAL to run!",active_payout);lv_label_set_text(lbl_log,l);}
-static void on_close(lv_event_t *e){lv_obj_add_flag(dlg_panel,LV_OBJ_FLAG_HIDDEN);}
-/* canvas is aligned at (10,70); tile centre = (sx, sy+32) with sy=96+(gx+gy)*32 */
-static void on_tap(lv_event_t *e){
-    lv_indev_t *in=lv_indev_active(); if(!in) return;
-    lv_point_t p; lv_indev_get_point(in,&p);
-    float fx=(float)(p.x-10-(CANVAS_W/2))/64.0f;
-    float fy=(float)(p.y-70-128)/32.0f;
-    int gx=(int)lroundf((fx+fy)*0.5f), gy=(int)lroundf((fy-fx)*0.5f);
-    if(gx<0||gx>=MAP_W||gy<0||gy>=MAP_H) return;
-    if(abs(gx-johnson_gx)<=1&&abs(gy-johnson_gy)<=1){
-        target_gx=johnson_gx; target_gy=johnson_gy+1;
-        lv_label_set_text(lbl_log,"> Approaching Mr. Johnson...");
-    }else{
-        target_gx=gx; target_gy=gy;
-        char l[64]; snprintf(l,sizeof(l),"> Moving to sector %d,%d",gx,gy);
-        lv_label_set_text(lbl_log,l);
+    esp_jpeg_image_output_t outimg;
+    if (esp_jpeg_decode(&cfg, &outimg) != ESP_OK) {
+        for (uint32_t i = 0; i < outsz / 2; i++) out[i] = 0x1082;  /* dark fallback */
     }
 }
-static void step_cb(lv_timer_t *t){if(player_gx!=target_gx||player_gy!=target_gy){if(player_gx<target_gx)player_gx++;else if(player_gx>target_gx)player_gx--;if(player_gy<target_gy)player_gy++;else if(player_gy>target_gy)player_gy--;render_scene();if(player_gx==target_gx&&player_gy==target_gy){if(abs(player_gx-johnson_gx)<=1&&abs(player_gy-johnson_gy)<=1)open_johnson();else if(street_map[player_gy][player_gx]==2){if(contract_active){nuyen+=active_payout;karma+=2;contract_active=false;update_hud();char l[160];snprintf(l,sizeof(l),"> RUN COMPLETE! +%d Nuyen & +2 Karma wired to credstick.",active_payout);lv_label_set_text(lbl_log,l);}else lv_label_set_text(lbl_log,"> DATA TERMINAL: Talk to Mr. Johnson first for a contract.");}}}}
-void vr_game_init(lv_obj_t *parent){lv_obj_set_style_bg_color(parent,lv_color_hex(0x0A0C14),0);lv_obj_t *hud=lv_obj_create(parent);lv_obj_set_size(hud,1260,56);lv_obj_align(hud,LV_ALIGN_TOP_MID,0,6);lv_obj_set_style_bg_color(hud,lv_color_hex(0x161B2E),0);lv_obj_set_style_border_color(hud,lv_color_hex(0x00F0FF),0);lv_obj_set_style_border_width(hud,2,0);lbl_stats=lv_label_create(hud);lv_obj_set_style_text_color(lbl_stats,lv_color_hex(0x00F0FF),0);lv_obj_align(lbl_stats,LV_ALIGN_LEFT_MID,10,0);update_hud();canvas_buf=heap_caps_malloc(CANVAS_W*CANVAS_H*2,MALLOC_CAP_SPIRAM);canvas=lv_canvas_create(parent);lv_canvas_set_buffer(canvas,canvas_buf,CANVAS_W,CANVAS_H,LV_COLOR_FORMAT_RGB565);lv_obj_align(canvas,LV_ALIGN_TOP_LEFT,10,70);lv_obj_add_flag(canvas,LV_OBJ_FLAG_CLICKABLE);lv_obj_add_event_cb(canvas,on_tap,LV_EVENT_CLICKED,NULL);lv_obj_t *side=lv_obj_create(parent);lv_obj_set_size(side,330,540);lv_obj_align(side,LV_ALIGN_TOP_RIGHT,-10,70);lv_obj_set_style_bg_color(side,lv_color_hex(0x121626),0);lv_obj_set_style_border_color(side,lv_color_hex(0xFF2AA5),0);lv_obj_set_style_border_width(side,2,0);lv_obj_t *pc=lv_canvas_create(side);lv_canvas_set_buffer(pc,(void*)vr_portrait_runner,96,96,LV_COLOR_FORMAT_RGB565);lv_obj_align(pc,LV_ALIGN_TOP_MID,0,8);lv_obj_t *bio=lv_label_create(side);lv_label_set_text(bio,"HANDLE: VOIDRUNNER\nARCHETYPE: DECKER/SAMURAI\nSITE: DOWNTOWN GALLERY\n\n- Tap a tile to move\n- Tap MR. JOHNSON for runs\n- Reach the DATA TERMINAL to run");lv_obj_set_style_text_color(bio,lv_color_hex(0xD8E4FF),0);lv_obj_align(bio,LV_ALIGN_TOP_LEFT,8,120);lv_obj_t *lb=lv_obj_create(parent);lv_obj_set_size(lb,1260,88);lv_obj_align(lb,LV_ALIGN_BOTTOM_MID,0,-8);lv_obj_set_style_bg_color(lb,lv_color_hex(0x0D111C),0);lv_obj_set_style_border_color(lb,lv_color_hex(0x28EB78),0);lv_obj_set_style_border_width(lb,2,0);lbl_log=lv_label_create(lb);lv_label_set_text(lbl_log,"> INFILTRATION ONLINE. Tap MR. JOHNSON to negotiate a run.");lv_obj_set_style_text_color(lbl_log,lv_color_hex(0x28EB78),0);lv_obj_align(lbl_log,LV_ALIGN_LEFT_MID,8,0);dlg_panel=lv_obj_create(parent);lv_obj_set_size(dlg_panel,760,220);lv_obj_center(dlg_panel);lv_obj_set_style_bg_color(dlg_panel,lv_color_hex(0x181D30),0);lv_obj_set_style_border_color(dlg_panel,lv_color_hex(0xFFB928),0);lv_obj_set_style_border_width(dlg_panel,3,0);lv_obj_add_flag(dlg_panel,LV_OBJ_FLAG_HIDDEN);lv_obj_t *jp=lv_canvas_create(dlg_panel);lv_canvas_set_buffer(jp,(void*)vr_portrait_johnson,96,96,LV_COLOR_FORMAT_RGB565);lv_obj_align(jp,LV_ALIGN_LEFT_MID,10,0);dlg_text=lv_label_create(dlg_panel);lv_obj_set_width(dlg_text,580);lv_label_set_long_mode(dlg_text,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_color(dlg_text,lv_color_hex(0xFFF2D6),0);lv_obj_align(dlg_text,LV_ALIGN_TOP_LEFT,125,14);btn_accept=lv_btn_create(dlg_panel);lv_obj_set_size(btn_accept,180,44);lv_obj_align(btn_accept,LV_ALIGN_BOTTOM_RIGHT,-210,-10);lv_obj_set_style_bg_color(btn_accept,lv_color_hex(0x1E8E5A),0);lv_obj_add_event_cb(btn_accept,on_accept,LV_EVENT_CLICKED,NULL);lv_obj_t *la=lv_label_create(btn_accept);lv_label_set_text(la,"ACCEPT RUN");lv_obj_center(la);lv_obj_t *bl=lv_btn_create(dlg_panel);lv_obj_set_size(bl,180,44);lv_obj_align(bl,LV_ALIGN_BOTTOM_RIGHT,-14,-10);lv_obj_set_style_bg_color(bl,lv_color_hex(0x8E2438),0);lv_obj_add_event_cb(bl,on_close,LV_EVENT_CLICKED,NULL);lv_obj_t *ll=lv_label_create(bl);lv_label_set_text(ll,"WALK AWAY");lv_obj_center(ll);render_scene();lv_timer_create(step_cb,110,NULL);}
+
+static void update_hud(void) {
+    char b[96];
+    snprintf(b, sizeof(b), "NUYEN %d\xC2\xA5   KARMA %d", nuyen, karma);
+    lv_label_set_text(lbl_hud, b);
+}
+
+static void show_node(int idx) {
+    cur_node = idx;
+    const vn_node_t *n = &story[idx];
+    if (n->scene >= 0 && n->scene != cur_scene) {
+        decode_jpg(&scenes[n->scene], bg_buf, BGW * BGH * 2);
+        cur_scene = n->scene;
+        lv_obj_invalidate(bg_canvas);
+    }
+    if (n->portrait >= 0) {
+        decode_jpg(&portraits[n->portrait], por_buf, PW * PH * 2);
+        lv_obj_invalidate(por_canvas);
+        lv_obj_clear_flag(por_canvas, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(por_canvas, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (n->speaker) {
+        lv_label_set_text(lbl_speaker, n->speaker);
+        lv_obj_clear_flag(lbl_speaker, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(lbl_speaker, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_label_set_text(lbl_text, n->text);
+    for (int i = 0; i < 3; i++) {
+        if (n->choices[i].label) {
+            lv_label_set_text(btn_lbl[i], n->choices[i].label);
+            lv_obj_clear_flag(btn[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(btn[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    update_hud();
+}
+
+static void on_choice(lv_event_t *e) {
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    const vn_choice_t *c = &story[cur_node].choices[i];
+    if (!c->label) return;
+    nuyen += c->dnuyen;
+    karma += c->dkarma;
+    show_node(c->next);
+}
+
+void vr_game_init(lv_obj_t *parent) {
+    lv_obj_set_style_bg_color(parent, lv_color_hex(0x05070E), 0);
+
+    bg_buf = heap_caps_malloc(BGW * BGH * 2, MALLOC_CAP_SPIRAM);
+    por_buf = heap_caps_malloc(PW * PH * 2, MALLOC_CAP_SPIRAM);
+
+    bg_canvas = lv_canvas_create(parent);
+    lv_canvas_set_buffer(bg_canvas, bg_buf, BGW, BGH, LV_COLOR_FORMAT_RGB565);
+    lv_obj_align(bg_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    /* portrait */
+    por_canvas = lv_canvas_create(parent);
+    lv_canvas_set_buffer(por_canvas, por_buf, PW, PH, LV_COLOR_FORMAT_RGB565);
+    lv_obj_align(por_canvas, LV_ALIGN_TOP_LEFT, 56, 236);
+    lv_obj_set_style_border_color(por_canvas, lv_color_hex(0xFF2AA5), 0);
+    lv_obj_set_style_border_width(por_canvas, 2, 0);
+
+    /* HUD */
+    lbl_hud = lv_label_create(parent);
+    lv_obj_set_style_text_color(lbl_hud, lv_color_hex(0x7CF5C2), 0);
+    lv_obj_align(lbl_hud, LV_ALIGN_TOP_RIGHT, -20, 16);
+
+    /* dialogue panel */
+    panel = lv_obj_create(parent);
+    lv_obj_set_size(panel, 1196, 212);
+    lv_obj_align(panel, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x080A14), 0);
+    lv_obj_set_style_bg_opa(panel, 205, 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(0x00F0FF), 0);
+    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_radius(panel, 4, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_speaker = lv_label_create(panel);
+    lv_obj_set_style_bg_color(lbl_speaker, lv_color_hex(0xFF2AA5), 0);
+    lv_obj_set_style_bg_opa(lbl_speaker, 255, 0);
+    lv_obj_set_style_text_color(lbl_speaker, lv_color_hex(0x0A0A10), 0);
+    lv_obj_set_style_pad_all(lbl_speaker, 5, 0);
+    lv_obj_align(lbl_speaker, LV_ALIGN_TOP_LEFT, 6, 6);
+
+    lbl_text = lv_label_create(panel);
+    lv_label_set_long_mode(lbl_text, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lbl_text, 720);
+    lv_obj_set_style_text_color(lbl_text, lv_color_hex(0xDEE8F6), 0);
+    lv_obj_align(lbl_text, LV_ALIGN_TOP_LEFT, 236, 40);
+
+    for (int i = 0; i < 3; i++) {
+        btn[i] = lv_btn_create(panel);
+        lv_obj_set_size(btn[i], 300, 50);
+        lv_obj_align(btn[i], LV_ALIGN_TOP_RIGHT, -10, 14 + i * 58);
+        lv_obj_set_style_bg_color(btn[i], lv_color_hex(0x13241F), 0);
+        lv_obj_set_style_border_color(btn[i], lv_color_hex(0x7CF5C2), 0);
+        lv_obj_set_style_border_width(btn[i], 2, 0);
+        lv_obj_set_style_radius(btn[i], 3, 0);
+        lv_obj_add_event_cb(btn[i], on_choice, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        btn_lbl[i] = lv_label_create(btn[i]);
+        lv_obj_set_style_text_color(btn_lbl[i], lv_color_hex(0x7CF5C2), 0);
+        lv_obj_center(btn_lbl[i]);
+    }
+
+    show_node(0);
+}
