@@ -72,6 +72,17 @@ static void tab5_io_reset_lcd_and_touch(i2c_master_bus_handle_t bus) {
         vTaskDelay(pdMS_TO_TICKS(150));
         i2c_master_bus_rm_device(dev);
     }
+    i2c_device_config_t dcfg2 = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x44, .scl_speed_hz = 100000 };
+    if (i2c_master_bus_add_device(bus, &dcfg2, &dev) == ESP_OK) {
+        uint8_t reg, val = 0;
+        reg = 0x03; i2c_master_transmit_receive(dev, &reg, 1, &val, 1, 50);
+        uint16_t cmd = 0x0003 | (((uint16_t)(val | 0x3F)) << 8); i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        reg = 0x05; i2c_master_transmit_receive(dev, &reg, 1, &val, 1, 50);
+        cmd = 0x0005 | (((uint16_t)(val | 0x3F)) << 8); i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        reg = 0x07; i2c_master_transmit_receive(dev, &reg, 1, &val, 1, 50);
+        cmd = 0x0007 | (((uint16_t)(val & 0xC0)) << 8); i2c_master_transmit(dev, (uint8_t*)&cmd, 2, 50);
+        i2c_master_bus_rm_device(dev);
+    }
 }
 
 void app_main(void) {
@@ -93,7 +104,7 @@ void app_main(void) {
 
     esp_lcd_dsi_bus_handle_t dsi_bus = NULL;
     esp_lcd_dsi_bus_config_t bus_cfg = ST7123_PANEL_BUS_DSI_2CH_CONFIG();
-    bus_cfg.lane_bit_rate_mbps = 750;
+    
     ESP_LOGI(TAG, "DSI bus: %d", esp_lcd_new_dsi_bus(&bus_cfg, &dsi_bus));
 
     esp_lcd_panel_io_handle_t io_handle = NULL;
@@ -102,7 +113,7 @@ void app_main(void) {
 
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0, .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 48, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
+        .dpi_clock_freq_mhz = 50, .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565, .num_fbs = 1,
         .video_timing = { .h_size = 720, .v_size = 1280, .hsync_pulse_width = 2, .hsync_back_porch = 156, .hsync_front_porch = 16, .vsync_pulse_width = 2, .vsync_back_porch = 16, .vsync_front_porch = 16 },
         .flags.use_dma2d = true,
     };
