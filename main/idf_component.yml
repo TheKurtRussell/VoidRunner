@@ -2,4 +2,3 @@ dependencies:
   idf: ">=5.4.0"
   lvgl/lvgl: "^9.2.0"
   m5stack/M5GFX: "^0.2.6"
-  espressif/esp_jpeg: "^1.0.0"

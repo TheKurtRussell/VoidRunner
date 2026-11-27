@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp" "game_world.c"
+    SRCS "main.cpp" "game_world.c" "jpeg_decode.cpp"
     INCLUDE_DIRS "." "assets"
     EMBED_FILES
         "assets/vn/scn_street.jpg"

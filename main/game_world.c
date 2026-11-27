@@ -8,10 +8,13 @@
 #include "lvgl.h"
 #include "game_world.h"
 #include "esp_heap_caps.h"
-#include "jpeg_decoder.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
+
+/* JPEG -> native RGB565, implemented in jpeg_decode.cpp via M5GFX */
+extern bool vr_decode_jpeg(const uint8_t *data, uint32_t len, uint16_t *out, int w, int h);
 
 /* ---- embedded assets ---------------------------------------------------- */
 #define EMB(sym) extern const uint8_t sym##_start[] asm("_binary_" #sym "_start"); \
@@ -48,7 +51,7 @@ static const vn_node_t story[] = {
 /*0*/ { SC_STREET, -1, NULL,
         "Rain hammers the Seattle Barrens. Neon bleeds down the glass and pools in the gutters. "
         "Your commlink buzzes against your ribs — an encrypted ping. Vex has work.",
-        { {"Answer it \xE2\x96\xB8", 1, 0, 0}, {0}, {0} } },
+        { {"Answer it", 1, 0, 0}, {0}, {0} } },
 /*1*/ { SC_OFFICE, P_VEX, "VEX",
         "\"Evening, chummer. Saeder-Krupp moved a prototype deck into the downtown gallery. "
         "Corp security's running a skeleton crew tonight. Clean grab. You in?\"",
@@ -56,7 +59,7 @@ static const vn_node_t story[] = {
 /*2*/ { -1, P_VEX, "VEX",
         "\"Knew I called the right runner. Eight-k nuyen on delivery. Don't get sentimental "
         "with the merch — in and out.\"",
-        { {"Head to the gallery \xE2\x96\xB8", 5, 0, 1}, {0}, {0} } },
+        { {"Head to the gallery", 5, 0, 1}, {0}, {0} } },
 /*3*/ { -1, P_VEX, "VEX",
         "\"Price? Twelve-five. I'll wire half to your credstick now as a show of faith. "
         "The rest when the deck's in my hands.\"",
@@ -72,11 +75,11 @@ static const vn_node_t story[] = {
 /*6*/ { SC_VAULT, P_GUARD, "SECURITY",
         "A patrol light sweeps the corridor. You melt into the dark between display cases and hold "
         "your breath. Boots pass within a meter, then recede. You're through.",
-        { {"Reach the vault \xE2\x96\xB8", 8, 8000, 1}, {0}, {0} } },
+        { {"Reach the vault", 8, 8000, 1}, {0}, {0} } },
 /*7*/ { SC_VAULT, P_GUARD, "SECURITY",
         "\"Hey! The gallery's closed, pal—\" The guard reaches for his radio. You move first. "
         "It's messy and loud, but the corridor's yours.",
-        { {"Reach the vault \xE2\x96\xB8", 8, 8000, -2}, {0}, {0} } },
+        { {"Reach the vault", 8, 8000, -2}, {0}, {0} } },
 /*8*/ { -1, -1, NULL,
         "The prototype deck hums in its cradle, haloed in cyan. You lift it, and the case alarm "
         "stays dark — clean. Sixty seconds to extraction. Vex is going to owe you.\n\n[ END OF PROLOGUE ]",
@@ -93,25 +96,15 @@ static uint16_t *bg_buf, *por_buf;
 static lv_obj_t *bg_canvas, *por_canvas, *panel, *lbl_speaker, *lbl_text, *lbl_hud;
 static lv_obj_t *btn[3], *btn_lbl[3];
 
-static void decode_jpg(const blob_t *b, uint16_t *out, uint32_t outsz) {
-    esp_jpeg_image_cfg_t cfg = {
-        .indata = (uint8_t *)b->s,
-        .indata_size = (uint32_t)(b->e - b->s),
-        .outbuf = (uint8_t *)out,
-        .outbuf_size = outsz,
-        .out_format = JPEG_IMAGE_FORMAT_RGB565,
-        .out_scale = JPEG_IMAGE_SCALE_0,
-        .flags = { .swap_color_bytes = 0 },
-    };
-    esp_jpeg_image_output_t outimg;
-    if (esp_jpeg_decode(&cfg, &outimg) != ESP_OK) {
-        for (uint32_t i = 0; i < outsz / 2; i++) out[i] = 0x1082;  /* dark fallback */
+static void decode_jpg(const blob_t *b, uint16_t *out, int w, int h) {
+    if (!vr_decode_jpeg(b->s, (uint32_t)(b->e - b->s), out, w, h)) {
+        for (int i = 0; i < w * h; i++) out[i] = 0x1082;  /* dark fallback */
     }
 }
 
 static void update_hud(void) {
     char b[96];
-    snprintf(b, sizeof(b), "NUYEN %d\xC2\xA5   KARMA %d", nuyen, karma);
+    snprintf(b, sizeof(b), "NUYEN %d   KARMA %d", nuyen, karma);
     lv_label_set_text(lbl_hud, b);
 }
 
@@ -119,12 +112,12 @@ static void show_node(int idx) {
     cur_node = idx;
     const vn_node_t *n = &story[idx];
     if (n->scene >= 0 && n->scene != cur_scene) {
-        decode_jpg(&scenes[n->scene], bg_buf, BGW * BGH * 2);
+        decode_jpg(&scenes[n->scene], bg_buf, BGW, BGH);
         cur_scene = n->scene;
         lv_obj_invalidate(bg_canvas);
     }
     if (n->portrait >= 0) {
-        decode_jpg(&portraits[n->portrait], por_buf, PW * PH * 2);
+        decode_jpg(&portraits[n->portrait], por_buf, PW, PH);
         lv_obj_invalidate(por_canvas);
         lv_obj_clear_flag(por_canvas, LV_OBJ_FLAG_HIDDEN);
     } else {
